@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ion HF
+Comment=HF data modem for amateur radio
+Exec=ionhf
+Icon=ionhf
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=ham;radio;modem;winlink;hf;

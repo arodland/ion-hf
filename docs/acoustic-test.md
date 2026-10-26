@@ -43,4 +43,4 @@ working together, before any on-air test.
 ## Keep
 
 Screenshots of the Link tab (Chat and Log), the levels reached, anything
-odd, and on Windows the log, `%APPDATA%\Ion HF\ion.log`.
+odd, and each computer's `ion.log` from the settings folder ([app.md](app.md)).

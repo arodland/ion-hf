@@ -1,6 +1,6 @@
 [package]
 name = "ionhf"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
@@ -25,3 +25,19 @@ toml = "1.1.8"
 
 [build-dependencies]
 winresource = "0.1.34"
+
+[package.metadata.deb]
+name = "ionhf"
+maintainer = "Jesse Forkum <67489731+jesseforkum@users.noreply.github.com>"
+copyright = "Jesse Forkum"
+license-file = ["../../LICENSE", "0"]
+extended-description = """An adaptive HF data modem for amateur radio: an ARQ link from MFSK to 64QAM OFDM, keyboard chat, files, nets, and a VARA-style host interface for Winlink clients such as Pat."""
+section = "hamradio"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/ionhf", "usr/bin/", "755"],
+    ["../../packaging/linux/ionhf.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.png", "usr/share/icons/hicolor/256x256/apps/ionhf.png", "644"],
+    ["../../packaging/README.txt", "usr/share/doc/ionhf/", "644"],
+]

@@ -41,8 +41,9 @@ radios.
 
 ## Download and build
 
-Windows zip and macOS disk image builds come from the "Release builds"
-workflow (`.github/workflows/release.yml`). They are unsigned;
+Windows, macOS, Debian and Linux packages are on the
+[Releases](https://github.com/jesseforkum/ion-hf/releases) page, built by
+`.github/workflows/release.yml` from each version tag. They are unsigned;
 `packaging/README.txt` has the run instructions, where the settings live,
 and the portable mode.
 

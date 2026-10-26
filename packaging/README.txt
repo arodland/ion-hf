@@ -14,12 +14,15 @@ now: the first time, right-click Ion HF and choose Open (or, in
 Terminal: xattr -d com.apple.quarantine "/Applications/Ion HF.app").
 Allow the microphone when asked: that is how Ion hears your radio.
 
+Linux: install the .deb (sudo apt install ./ionhf_*.deb; Ion HF appears
+in the applications menu), or run ionhf from the tarball.
+
 Try it with no radio: ionhf --loopback (a simulated station, LOOP,
 answers calls).
 
 Settings
 --------
-ionhf.toml, with window.ron (the window) and ion.log (the log, Windows):
+ionhf.toml, with window.ron (the window) and ion.log (the log):
   Windows  %APPDATA%\Ion HF
   macOS    ~/Library/Application Support/Ion HF
   Linux    ~/.config/ionhf

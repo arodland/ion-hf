@@ -26,7 +26,7 @@ ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
 ## Settings
 
 `ionhf.toml` holds the settings, `window.ron` the window, and `ion.log`
-the log (written by a Windows release build started without a console):
+the log (written by a release build started without a terminal):
 
 | System | Folder |
 |---|---|

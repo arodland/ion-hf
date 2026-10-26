@@ -1,18 +1,40 @@
-name: Release builds
+name: Release
 
-# Windows zip and macOS universal app in a disk image, unsigned, as run
-# artifacts.
+# A `v*` tag builds Windows, macOS, Linux and Debian packages and publishes
+# them as a GitHub Release (a pre-release when the version has a suffix
+# such as `-alpha.1`). Run by hand, it builds the same packages as run
+# artifacts and publishes nothing.
 on:
-  workflow_dispatch:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      numeric: ${{ steps.v.outputs.numeric }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          VERSION=$(grep -m1 '^version' crates/ionhf/Cargo.toml | cut -d'"' -f2)
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match crates/ionhf version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "numeric=${VERSION%%-*}" >> "$GITHUB_OUTPUT"
+
   windows:
+    needs: version
     runs-on: windows-latest
+    env:
+      NAME: IonHF-${{ needs.version.outputs.version }}-windows
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,17 +44,21 @@ jobs:
       - name: Zip
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/IonHF | Out-Null
-          Copy-Item target/release/ionhf.exe dist/IonHF/
-          Copy-Item packaging/README.txt dist/IonHF/
-          Compress-Archive -Path dist/IonHF/* -DestinationPath dist/IonHF-windows.zip
+          New-Item -ItemType Directory -Force "dist/$env:NAME" | Out-Null
+          Copy-Item target/release/ionhf.exe "dist/$env:NAME/"
+          Copy-Item packaging/README.txt, LICENSE "dist/$env:NAME/"
+          Compress-Archive -Path "dist/$env:NAME" -DestinationPath "dist/$env:NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: IonHF-windows
-          path: dist/IonHF-windows.zip
+          name: windows
+          path: dist/${{ env.NAME }}.zip
 
   macos:
+    needs: version
     runs-on: macos-latest
+    env:
+      NAME: IonHF-${{ needs.version.outputs.version }}-macos
+      NUMERIC: ${{ needs.version.outputs.numeric }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,7 +70,6 @@ jobs:
       - run: cargo build -p ionhf --release --target x86_64-apple-darwin
       - name: App bundle and disk image
         run: |
-          VERSION=$(grep -m1 '^version' crates/ionhf/Cargo.toml | cut -d'"' -f2)
           APP="dist/root/Ion HF.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           lipo -create -output "$APP/Contents/MacOS/ionhf" \
@@ -70,8 +95,8 @@ jobs:
             <key>CFBundleIdentifier</key><string>net.forkum.ionhf</string>
             <key>CFBundleExecutable</key><string>ionhf</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${NUMERIC}</string>
+            <key>CFBundleVersion</key><string>${NUMERIC}</string>
             <key>CFBundleIconFile</key><string>ion</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
@@ -81,10 +106,70 @@ jobs:
           EOF
           plutil -lint "$APP/Contents/Info.plist"
           codesign --force --deep --sign - "$APP"
-          cp packaging/README.txt dist/root/
+          cp packaging/README.txt LICENSE dist/root/
           ln -s /Applications dist/root/Applications
-          hdiutil create -volname "Ion HF" -srcfolder dist/root -ov -format UDZO "dist/IonHF-macos.dmg"
+          hdiutil create -volname "Ion HF" -srcfolder dist/root -ov -format UDZO "dist/$NAME.dmg"
       - uses: actions/upload-artifact@v4
         with:
-          name: IonHF-macos
-          path: dist/IonHF-macos.dmg
+          name: macos
+          path: dist/${{ env.NAME }}.dmg
+
+  linux:
+    needs: version
+    # The oldest supported runner, so the binary and the .deb run on older
+    # glibc too (Debian 12, Ubuntu 22.04 and later).
+    runs-on: ubuntu-22.04
+    env:
+      NAME: IonHF-${{ needs.version.outputs.version }}-linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo test -p ion --release --lib
+      - run: cargo build -p ionhf --release
+      - name: Tarball
+        run: |
+          mkdir -p "dist/$NAME"
+          cp target/release/ionhf packaging/README.txt LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+      - name: Debian package
+        run: |
+          cargo deb -p ionhf --no-build --output dist/
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/${{ env.NAME }}.tar.gz
+            dist/*.deb
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Release
+        run: |
+          PRE=()
+          [[ "$VERSION" == *-* ]] && PRE=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Ion HF $VERSION" \
+            --notes-file packaging/release-notes.md \
+            "${PRE[@]}"

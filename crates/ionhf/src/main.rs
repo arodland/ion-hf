@@ -92,13 +92,13 @@ fn parse_args() -> Args {
 }
 
 /// To stderr, or to `ion.log` in [`Config::dir`] for a release build
-/// started without a console.
+/// started without a terminal (from Explorer, Finder or a desktop menu).
 fn init_logging() {
     let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    #[cfg(all(windows, not(debug_assertions)))]
+    #[cfg(not(debug_assertions))]
     {
-        use std::os::windows::io::AsRawHandle;
-        if std::io::stderr().as_raw_handle().is_null() {
+        use std::io::IsTerminal;
+        if !std::io::stderr().is_terminal() {
             let dir = Config::dir();
             let file = std::fs::create_dir_all(&dir).and_then(|()| std::fs::File::create(dir.join("ion.log")));
             if let Ok(file) = file {
