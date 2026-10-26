@@ -1,0 +1,301 @@
+//! Receiving side: data bursts in, ACKs out.
+
+use super::{Incoming, Outgoing, Role, Station, TINY, TINY_ALL, user_hi};
+use crate::level::{FrameSize, Guard, LADDER, Wave};
+use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
+use crate::link::harq;
+use crate::link::report::ChanReport;
+use crate::phy_mfsk::MfskMode;
+
+/// For a data burst in `data`, the shorter waveforms its tiny ACK may
+/// go in, with the SNR (dB in 2.4 kHz) from which their header-only
+/// bursts get through at least 90% of the time on CCIR poor.
+/// Only waveforms the data could have used anyway: OFDM for OFDM data
+/// (an MFSK level at a high SNR means OFDM is failing: Doppler), R1 for
+/// R0 data.
+pub fn cheap_ack_waves(data: Wave) -> &'static [(Wave, f32)] {
+    match data {
+        Wave::Ofdm(Guard::Slice) => &[(Wave::Ofdm(Guard::Normal), 2.0), (Wave::Ofdm(Guard::Long), 2.0)],
+        Wave::Mfsk(MfskMode::R0) => &[(Wave::Mfsk(MfskMode::R1), -8.0)],
+        _ => &[],
+    }
+}
+
+/// Data bursts a poll turns `cheap_ack_margin_db` off for.
+const CHEAP_ACK_OFF_BURSTS: u8 = 8;
+
+impl Station {
+    pub(super) fn receiver_rx(&mut self, inc: &Incoming, tiny: Option<Tiny>, frames: &[Option<Frame>], now: f64) {
+        self.note_rx_channel(inc);
+        if inc.code < LADDER.len() {
+            let c = inc.chan;
+            self.stats.heard.push((
+                inc.code,
+                [c.delay_ms, c.doppler_hz, c.eff_snr_db, inc.snr_db],
+                self.chan.class(),
+            ));
+            self.rx_level = inc.code;
+            let long = LADDER[inc.code].frame == FrameSize::Long;
+            let combined;
+            let frames = match &inc.soft {
+                Some(soft) if long => {
+                    let r = self.harq.receive(inc.code, user_hi(inc.user) >> 2, soft);
+                    self.stats.harq_recovered += r.recovered as u32;
+                    combined = r
+                        .frames
+                        .iter()
+                        .map(|f| f.as_deref().and_then(Frame::decode))
+                        .collect::<Vec<_>>();
+                    // A codeword that decoded to a bad frame has left the
+                    // store while the peer will think it is there: drop
+                    // the lot and have everything missing sent fresh.
+                    let bad = r
+                        .frames
+                        .iter()
+                        .zip(&combined)
+                        .any(|(c, f)| c.is_some() && !f.as_ref().is_some_and(|f| f.kind == Kind::Data));
+                    if bad || !self.cfg.harq {
+                        self.harq.clear();
+                    }
+                    &combined[..]
+                }
+                _ => {
+                    self.harq.clear();
+                    frames
+                }
+            };
+            let mut bitmap = 0u64;
+            for (i, f) in frames.iter().enumerate() {
+                if let Some(f) = f
+                    && f.kind == Kind::Data
+                {
+                    self.accept(f);
+                    if i < 64 {
+                        bitmap |= 1 << i;
+                    }
+                } else {
+                    self.stats.codewords_failed += 1;
+                }
+            }
+            let stored = !self.harq.is_empty();
+            self.last_ack = (user_hi(inc.user) & 3, bitmap, frames.len(), stored);
+            let mut ack = self.ack_burst(inc.wave);
+            if ack.code == TINY {
+                ack.wave = self.ack_wave(inc.wave, inc.snr_db);
+            }
+            self.cheap_ack_off = self.cheap_ack_off.saturating_sub(1);
+            self.reply = Some(ack);
+            return;
+        }
+        match tiny {
+            Some(Tiny::Poll | Tiny::Idle) => {
+                // A poll: our ACK was lost. Answer in the poll's waveform,
+                // and no cheap ACK waveform for a while.
+                if tiny == Some(Tiny::Poll) {
+                    self.cheap_ack_off = CHEAP_ACK_OFF_BURSTS;
+                }
+                self.reply = Some(self.ack_burst(inc.wave));
+            }
+            Some(Tiny::Turn) => {
+                // Our turn to send: start where the peer was getting
+                // through, capped by what we hear. With nothing queued,
+                // check in at once so the peer sees we took over.
+                self.role = Role::Sender;
+                self.harq.clear();
+                self.at_peer.clear();
+                // The channel is the same both ways: our own class, and
+                // the lower of the Turn's SNR and the last data burst's.
+                self.peer_class = self.chan.class();
+                let rep = self.report_snr();
+                let snr = match self.chan.eff_snr_db() {
+                    Some(e) if self.cfg.eff_snr => e.min(rep),
+                    _ => rep,
+                };
+                self.target = self.level_for(snr - self.air_db(self.rx_level));
+                self.level = self.usable_below(self.rx_level.min(self.target), now);
+                self.peer_wants_turn = false;
+                // The first burst after a turn is never longer than
+                // `max_burst_s`: the peer's TurnTaken wait counts on it.
+                self.burst_s = self.cfg.max_burst_s;
+                self.clear_wait();
+                self.last_tx_end = f64::NEG_INFINITY;
+            }
+            Some(Tiny::DiscReq) => {
+                self.reply = Some(self.tiny(Tiny::DiscAck, inc.wave));
+                self.close_after_tx = true;
+            }
+            _ => {}
+        }
+        // Our ConnAck was lost: the caller asks again.
+        if frames.iter().flatten().any(|f| f.kind == Kind::ConnReq) {
+            self.reply = Some(self.conn_ack(inc));
+        }
+    }
+
+    /// Stores a data frame and delivers whatever is now contiguous.
+    fn accept(&mut self, f: &Frame) {
+        // 24-bit offset on the air → full offset near `delivered`.
+        let d = f.field.wrapping_sub(self.delivered) & 0xFF_FFFF;
+        let off = if d < 0x80_0000 {
+            self.delivered.wrapping_add(d)
+        } else {
+            self.delivered.wrapping_sub(0x100_0000 - d)
+        };
+        let end = off.wrapping_add(f.payload.len() as u32);
+        if end.wrapping_sub(self.delivered) as i32 <= 0 {
+            return; // already delivered
+        }
+        let skip = self.delivered.wrapping_sub(off) as i32;
+        let (off, data) = if skip > 0 {
+            (self.delivered, &f.payload[skip as usize..])
+        } else {
+            (off, &f.payload[..])
+        };
+        let keep = self.rx_pending.get(&off).is_none_or(|v| v.len() < data.len());
+        if keep {
+            self.rx_pending.insert(off, data.to_vec());
+        }
+        // Deliver from `delivered` while the pieces join up.
+        loop {
+            let next = self
+                .rx_pending
+                .range(..=self.delivered)
+                .next_back()
+                .map(|(&k, v)| (k, v.len()));
+            let Some((k, len)) = next else { break };
+            let end = k + len as u32;
+            if end > self.delivered {
+                let v = &self.rx_pending[&k];
+                let from = (self.delivered - k) as usize;
+                let before = self.inbox.len();
+                match &mut self.rx_codec {
+                    Some(c) => {
+                        c.feed(&v[from..], &mut self.inbox);
+                        self.stats.codec_errors = c.errors;
+                    }
+                    None => self.inbox.extend_from_slice(&v[from..]),
+                }
+                self.stats.text_received += (self.inbox.len() - before) as u64;
+                self.stats.bytes_received += (len - from) as u64;
+                self.delivered = end;
+            }
+            // Drop everything that is now fully delivered.
+            let done: Vec<u32> = self
+                .rx_pending
+                .range(..=self.delivered)
+                .filter(|(k, v)| **k + v.len() as u32 <= self.delivered)
+                .map(|(&k, _)| k)
+                .collect();
+            if done.is_empty() {
+                break;
+            }
+            for k in done {
+                self.rx_pending.remove(&k);
+            }
+        }
+    }
+
+    /// Receiving side: notes a burst's channel measurement.
+    pub(super) fn note_rx_channel(&mut self, inc: &Incoming) {
+        self.rx_slot = inc.slot;
+        self.last_rx_snr = inc.snr_db;
+        self.last_rx_eff = if inc.chan.eff_snr_db.is_finite() {
+            inc.chan.eff_snr_db
+        } else {
+            inc.snr_db
+        };
+        self.chan.add(&inc.chan);
+    }
+
+    /// The SNR our ACKs report: effective or mean.
+    fn report_snr(&self) -> f32 {
+        if self.cfg.eff_snr {
+            self.last_rx_eff
+        } else {
+            self.last_rx_snr
+        }
+    }
+
+    /// Waveform of a tiny ACK for a data burst in `data` heard at
+    /// `snr_db`: the shortest of `data` and [`cheap_ack_waves`] the SNR
+    /// allows (`Config::cheap_ack_margin_db`). Never longer than `data`'s
+    /// own, so the sender's wait for it still holds.
+    fn ack_wave(&self, data: Wave, snr_db: f32) -> Wave {
+        let Some(margin) = self.cfg.cheap_ack_margin_db else {
+            return data;
+        };
+        if self.cheap_ack_off > 0 {
+            return data;
+        }
+        let len = |w: Wave| self.air.duration(w, TINY, 0);
+        cheap_ack_waves(data)
+            .iter()
+            .filter(|&&(w, th)| snr_db >= th + margin && len(w) < len(data))
+            .map(|&(w, _)| w)
+            .min_by(|&a, &b| len(a).total_cmp(&len(b)))
+            .unwrap_or(data)
+    }
+
+    fn ack_burst(&self, wave: Wave) -> Outgoing {
+        let (burst, bitmap, n, stored) = self.last_ack;
+        let want_turn = !self.out.is_empty();
+        let want_disc = self.want_disc;
+        let all = n <= harq::MAX_SLOTS && bitmap == u64::MAX >> (64 - n.max(1));
+        let all_tiny = self.cfg.tiny_ack_all && n > TINY_ACK_FRAMES && all && !stored;
+        if n <= TINY_ACK_FRAMES || all_tiny {
+            return self.tiny(
+                Tiny::Ack {
+                    burst,
+                    bitmap: if all_tiny { TINY_ALL as u8 } else { bitmap as u8 },
+                    snr_db: self.report_snr(),
+                    want_turn,
+                    want_disc,
+                    stored,
+                    class: self.chan.class(),
+                    slot: self.rx_slot,
+                },
+                wave,
+            );
+        }
+        let mut f = Frame::new(Kind::Ack, self.session as u32);
+        f.payload = AckInfo {
+            burst,
+            bitmap,
+            snr_db: self.last_rx_snr,
+            delivered: self.delivered & 0xFF_FFFF,
+            report: Some({
+                let (delay_ms, doppler_hz) = self.chan.spreads();
+                ChanReport {
+                    class: self.chan.class(),
+                    eff_snr_db: self.last_rx_eff,
+                    delay_ms,
+                    doppler_hz,
+                    slot: self.rx_slot,
+                }
+            }),
+        }
+        .to_bytes();
+        if want_turn {
+            f.flags |= flags::WANT_TURN;
+        }
+        if want_disc {
+            f.flags |= flags::WANT_DISC;
+        }
+        if stored {
+            f.flags |= flags::STORED;
+        }
+        self.control(f, wave)
+    }
+
+    /// Our answer to a ConnReq: the SNR we heard it at (effective, with the
+    /// channel report), the channel class, and whether we compress.
+    pub(super) fn conn_ack(&self, inc: &Incoming) -> Outgoing {
+        let t = Tiny::ConnAck {
+            snr_db: self.report_snr(),
+            compress: self.compressing(),
+            class: self.chan.class(),
+            slot: inc.slot,
+        };
+        self.tiny(t, inc.wave)
+    }
+}

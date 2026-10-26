@@ -1,0 +1,11 @@
+[package]
+name = "tci"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+log = "0.4.34"
+tungstenite = "0.30.0"
+url = "2.5.8"

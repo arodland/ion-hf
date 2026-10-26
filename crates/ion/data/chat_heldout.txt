@@ -1,0 +1,106 @@
+QST, this is KB8YLN acting net control for the Licking County ARES emergency net.
+This net is now in session for the ice storm response. All stations please stand by.
+Stations with emergency traffic only, call now.
+No emergency traffic heard. Taking check-ins from shelters and served agencies first.
+KC8WXP at the Newark Middle School shelter, two items of traffic.
+N8PVQ at Licking Memorial Hospital, no traffic at this time.
+KD8MKO mobile near Heath, available for assignment.
+Roger KC8WXP with two, N8PVQ no traffic, KD8MKO available. KC8WXP go ahead with your first item.
+Shelter census is 88, we are out of cots and running low on blankets.
+Second item, we need a nurse or EMT on site for an elderly occupant with breathing problems.
+Copy both items KC8WXP. Passing the medical request to the EOC as priority.
+KD8MKO, please proceed to the Newark Middle School shelter and report on arrival.
+KD8MKO en route, ETA 20 minutes.
+Any further check-ins for the emergency net?
+WB8TFA, Carl, Granville, no traffic, monitoring.
+This net will remain active until released by the EOC. Next roll call at 1900.
+
+N0CALL de W9KGT, are you there Jim?
+Hi Pat, yes I am here, copy you about 80 percent tonight.
+Rig here is the IC-705 on battery, 10 watts into a magnetic loop on the porch.
+That is a nice setup, I am impressed you are getting out that well with a loop.
+The noise level here is S7 from the neighbor's solar inverter.
+Have you tried a common mode choke on the feed line?
+I put two on last weekend and it dropped the noise by about two S units.
+Weather in Peoria is foggy and 51 degrees, a typical fall evening.
+Are you planning to go to the hamfest in Dayton this year?
+Probably, my son wants to look for an old tube receiver.
+OK Pat, the band is going long, I will let you go. 73 and good DX.
+73 Jim, thanks for the chat.
+
+CQ CQ DE WA2HZX WA2HZX PSE K
+WA2HZX DE N0CALL GE OM UR 559 559 IN COLUMBUS OH NAME JIM BK
+R JIM TNX RPT UR 569 QTH TRENTON NJ NAME AL RIG K3 100W ANT LOOP HW CPY BK
+FB AL ALL OK HR WX RAIN 50F TNX FER QSO 73 SK
+
+EOC this is AC8UJ at the Mount Vernon water treatment plant.
+Plant is running on backup power, water pressure is normal for now.
+Chlorine supply is good for 5 days, request a fuel truck by Friday morning.
+Phone lines are working again but the internet circuit is still down.
+Roger AC8UJ, water plant on backup power, pressure normal, fuel truck needed by Friday. Logged.
+
+SKYWARN report from KE8TPB: one inch hail on Cherry Valley Road at 1712.
+Measured wind gust 62 mph on my home weather station in Johnstown.
+Large tree down blocking both lanes of Route 37 east of Alexandria.
+Rotation reported by a trained spotter near Utica, moving east at 35 mph.
+Roger, relaying rotation report near Utica to the Wilmington weather office now.
+
+NR 31 P KB8YLN 15 NEWARK OH 1640 DEC 03
+TO LICKING COUNTY EMA DIRECTOR
+SHELTER AT CAPACITY X REQUEST SECOND SHELTER OPEN IN HEATH X EIGHTY PERSONS
+SIGNED SHELTER MANAGER
+Ready to copy your message, go ahead.
+QSL message 31, thank you, will deliver by phone.
+
+To: Knox County EOC
+From: Fredericktown Red Cross station
+Subject: Supply request
+Requesting 200 meals ready to eat and 40 cases of water for the warming center by 1800.
+Contact is Linda Greene on the Red Cross radio or at the warming center front desk.
+
+Hi everyone, all safe at Grandma's house. No power and the phones are out. Will call when we can.
+Tell Dad the basement flooded but the furnace is above the water line.
+We evacuated to the church on Third Street, please let my brother know.
+
+Mobile report: KD8MKO at the Heath shelter, 34 people here so far, setting up the radio.
+W8DEN leaving the EOC to pick up a replacement antenna at the county garage.
+
+Ice accumulation about half an inch, power lines sagging on Mount Vernon Road.
+Freezing rain continues, temperature 29 degrees, expect worsening conditions overnight.
+Several transformers have blown in the north end of town, about 3,000 customers out.
+
+Can you QSY to 3.590? There is a net starting on this frequency.
+Moving now, see you up 5.
+Sorry, lost you in the noise. Can you repeat your shelter count?
+The count is 88, eight eight.
+Please stand by, priority traffic from the EOC.
+Roger, standing by.
+
+Saturday digital net: KB8YLN, Newark, Ion at 20 watts, one item for the net.
+Item: the county will test the new Winlink gateway on Sunday at 1400, all stations please try a connection.
+N8PVQ, Newark, no traffic, good copy on Ion tonight.
+Thanks all, five check-ins, one item. Digital net closed at 2015.
+
+The new Ion version sends short chat lines much faster on the MFSK floor.
+I could not connect at first, then realized my audio level was too high and the signal was clipping.
+After turning it down the connection stayed at the OFDM levels for the whole session.
+Has anyone tested the net mode with more than ten stations yet?
+We tried it with six last week and the check-ins took about two minutes.
+
+My antenna is a 40 meter dipole fed with ladder line and a tuner, works on all bands.
+Back in the day I ran AM on 75 meters with a homebrew transmitter.
+I just finished building a 5 watt QRP kit, first contact was Ohio to Maine.
+Your audio sounds good, the new mic is a big improvement.
+The bands have been dead all week, hardly anyone on.
+Good luck with the field day setup, see you on the air.
+Thanks for the contact, QSL via LoTW.
+
+ICS 213 GENERAL MESSAGE
+Incident: Ice storm response
+To: Licking County EOC Logistics
+From: Heath Shelter Radio Operator
+Message: Second shelter open with 34 occupants. Need 40 cots, 100 blankets and food for the evening meal. Generator on site but no fuel.
+Approved by: Shelter Lead R. Patel
+
+All stations, the EOC has released the net. Thanks for your service tonight.
+This is KB8YLN securing the Licking County ARES emergency net at 2347 local. 73 all.

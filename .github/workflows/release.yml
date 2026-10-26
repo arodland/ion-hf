@@ -1,0 +1,90 @@
+name: Release builds
+
+# Windows zip and macOS universal app in a disk image, unsigned, as run
+# artifacts.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ion --release --lib
+      - run: cargo build -p ionhf --release
+      - name: Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/IonHF | Out-Null
+          Copy-Item target/release/ionhf.exe dist/IonHF/
+          Copy-Item packaging/README.txt dist/IonHF/
+          Compress-Archive -Path dist/IonHF/* -DestinationPath dist/IonHF-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IonHF-windows
+          path: dist/IonHF-windows.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ion --release --lib
+      - run: cargo build -p ionhf --release --target aarch64-apple-darwin
+      - run: cargo build -p ionhf --release --target x86_64-apple-darwin
+      - name: App bundle and disk image
+        run: |
+          VERSION=$(grep -m1 '^version' crates/ionhf/Cargo.toml | cut -d'"' -f2)
+          APP="dist/root/Ion HF.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/ionhf" \
+            target/aarch64-apple-darwin/release/ionhf \
+            target/x86_64-apple-darwin/release/ionhf
+          lipo -info "$APP/Contents/MacOS/ionhf"
+          mkdir -p dist/ion.iconset
+          for s in 16 32 64 128 256; do
+            sips -z $s $s crates/ionhf/assets/icon.png --out dist/ion.iconset/icon_${s}x${s}.png > /dev/null
+          done
+          for s in 16 32 64 128; do
+            cp dist/ion.iconset/icon_$((s * 2))x$((s * 2)).png dist/ion.iconset/icon_${s}x${s}@2x.png
+          done
+          rm -f dist/ion.iconset/icon_64x64.png
+          iconutil -c icns dist/ion.iconset -o "$APP/Contents/Resources/ion.icns"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Ion HF</string>
+            <key>CFBundleDisplayName</key><string>Ion HF</string>
+            <key>CFBundleIdentifier</key><string>net.forkum.ionhf</string>
+            <key>CFBundleExecutable</key><string>ionhf</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleIconFile</key><string>ion</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSMicrophoneUsageDescription</key><string>Ion HF listens to your radio's receive audio.</string>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"
+          cp packaging/README.txt dist/root/
+          ln -s /Applications dist/root/Applications
+          hdiutil create -volname "Ion HF" -srcfolder dist/root -ov -format UDZO "dist/IonHF-macos.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IonHF-macos
+          path: dist/IonHF-macos.dmg

@@ -1,0 +1,632 @@
+//! Net mode on the simulated air: check-ins, polled rounds, relays and
+//! bulletins.
+
+use std::sync::Arc;
+
+use ion::link::Air;
+use ion::link::net::{NetConfig, NetEvent, NetStation};
+use ion::link::net_sim::NetSim;
+use ion::link::sim::ModelAir;
+
+const NCS: &str = "N0NCS";
+const NET: &str = "EMCOMM";
+
+/// NCS is station 0; the members follow, all at `snr_db` to each other.
+fn net(members: &[&str], snr_db: f32, seed: u64, tweak: impl Fn(&mut NetConfig)) -> NetSim {
+    let air: Arc<dyn Air> = Arc::new(ModelAir::default());
+    let mut cfg = NetConfig::new(NCS, NET, true);
+    tweak(&mut cfg);
+    let mut stations = vec![NetStation::new(cfg, air.clone())];
+    for (i, call) in members.iter().enumerate() {
+        let mut cfg = NetConfig::new(call, NET, false);
+        cfg.seed = seed.wrapping_mul(7919).wrapping_add(i as u64 + 1);
+        tweak(&mut cfg);
+        stations.push(NetStation::new(cfg, air.clone()));
+    }
+    NetSim::new(stations, snr_db, air, seed)
+}
+
+/// Runs, collecting every station's events.
+fn run(
+    sim: &mut NetSim,
+    events: &mut [Vec<NetEvent>],
+    t_max: f64,
+    mut done: impl FnMut(&[Vec<NetEvent>]) -> bool,
+) -> bool {
+    while sim.t < t_max {
+        for (i, s) in sim.stations.iter_mut().enumerate() {
+            events[i].extend(s.take_events());
+        }
+        if done(events) {
+            return true;
+        }
+        for _ in 0..100 {
+            sim.step();
+        }
+    }
+    false
+}
+
+fn messages_from(ev: &[NetEvent], from: &str) -> Vec<String> {
+    ev.iter()
+        .filter_map(|e| match e {
+            NetEvent::Message {
+                from: f,
+                data,
+                overheard: false,
+                ..
+            } if f == from => Some(String::from_utf8_lossy(data).to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn bulletins(ev: &[NetEvent]) -> Vec<String> {
+    ev.iter()
+        .filter_map(|e| match e {
+            NetEvent::Message { to: None, data, .. } => Some(String::from_utf8_lossy(data).to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn report(call: &str) -> String {
+    format!("{call} checking in from the county EOC. No traffic. Power and phones up. 73")
+}
+
+const BULLETIN: &str = "QST all stations: red flag warning for Wilson and Lincoln counties until 8 PM. \
+Shelters open at the Central civic center. Next net 2100 local on 3.576. de N0NCS";
+
+#[test]
+fn a_net_checks_in_reports_and_gets_the_bulletin() {
+    let calls = ["K1ABC", "W1AW", "N0CALL", "W5XYZ", "N0ABC"];
+    let mut sim = net(&calls, 8.0, 1, |_| {});
+    for (i, c) in calls.iter().enumerate() {
+        sim.stations[i + 1].send(report(c).as_bytes());
+    }
+    sim.stations[0].send(BULLETIN.as_bytes());
+    let mut ev = vec![Vec::new(); calls.len() + 1];
+    let ok = run(&mut sim, &mut ev, 1800.0, |ev| {
+        calls.iter().all(|c| messages_from(&ev[0], c).len() == 1) && ev[1..].iter().all(|e| bulletins(e).len() == 1)
+    });
+    let roster = sim.stations[0].roster(sim.t);
+    assert!(ok, "after {:.0} s: roster {roster:#?}\nNCS events {:#?}", sim.t, ev[0]);
+    for (i, c) in calls.iter().enumerate() {
+        assert_eq!(messages_from(&ev[0], c), vec![report(c)]);
+        assert_eq!(bulletins(&ev[i + 1]), vec![BULLETIN.to_string()]);
+        assert!(
+            ev[i + 1].iter().any(|e| matches!(e, NetEvent::Joined { .. })),
+            "{c} never joined"
+        );
+    }
+    // Members also copy each other's reports, as on a voice net.
+    let overheard = ev[1]
+        .iter()
+        .filter(|e| matches!(e, NetEvent::Message { overheard: true, .. }))
+        .count();
+    assert!(overheard >= 3, "K1ABC overheard only {overheard} reports");
+}
+
+#[test]
+fn a_weak_station_gets_through_at_the_floor() {
+    let calls = ["K1ABC", "W1AW", "W5WEAK"];
+    let mut sim = net(&calls, 12.0, 2, |_| {});
+    sim.set_path(0, 3, -9.0);
+    sim.stations[3].send(b"W5WEAK on battery power, all well here");
+    sim.stations[1].send(&vec![b'x'; 1500]);
+    let mut ev = vec![Vec::new(); 4];
+    let ok = run(&mut sim, &mut ev, 2400.0, |ev| {
+        !messages_from(&ev[0], "W5WEAK").is_empty() && !messages_from(&ev[0], "K1ABC").is_empty()
+    });
+    assert!(ok, "roster {:#?}", sim.stations[0].roster(sim.t));
+    let roster = sim.stations[0].roster(sim.t);
+    let weak = roster.iter().find(|r| r.call == "W5WEAK").unwrap();
+    let strong = roster.iter().find(|r| r.call == "K1ABC").unwrap();
+    assert!(weak.cap < strong.cap, "weak {weak:?} strong {strong:?}");
+}
+
+#[test]
+fn a_station_only_another_member_hears_is_relayed() {
+    // N5HID hears NCS fine but NCS cannot hear it; W1AW hears both.
+    let calls = ["W1AW", "K1ABC", "N5HID"];
+    let mut sim = net(&calls, 10.0, 3, |_| {});
+    sim.snr[3][0] = -40.0; // N5HID → NCS: nothing
+    sim.snr[0][3] = 6.0; // NCS → N5HID: fine
+    sim.set_path(2, 3, -40.0); // K1ABC cannot hear it either
+    sim.stations[3].send(b"N5HID: tree down on highway 12, road blocked");
+    let mut ev = vec![Vec::new(); 4];
+    let ok = run(&mut sim, &mut ev, 3000.0, |ev| {
+        !messages_from(&ev[0], "N5HID").is_empty()
+    });
+    assert!(
+        ok,
+        "NCS events {:#?}\nroster {:#?}",
+        ev[0],
+        sim.stations[0].roster(sim.t)
+    );
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::CheckedIn { call, via: Some(v), .. } if call == "N5HID" && v == "W1AW")),
+        "check-in not relayed: {:#?}",
+        ev[0]
+    );
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Relayed { source, via } if source == "N5HID" && via == "W1AW")),
+        "{:#?}",
+        ev[0]
+    );
+    assert_eq!(
+        messages_from(&ev[0], "N5HID"),
+        vec!["N5HID: tree down on highway 12, road blocked".to_string()]
+    );
+}
+
+#[test]
+fn a_pile_up_of_check_ins_sorts_itself_out() {
+    let calls: Vec<String> = (0..12)
+        .map(|i| format!("W{}ABC", i % 10) + &"XYZ"[..(i / 10) + 1])
+        .collect();
+    let refs: Vec<&str> = calls.iter().map(String::as_str).collect();
+    let mut sim = net(&refs, 10.0, 4, |c| c.beacon_every_s = 90.0);
+    let mut ev = vec![Vec::new(); calls.len() + 1];
+    let ok = run(&mut sim, &mut ev, 3600.0, |ev| {
+        ev[1..]
+            .iter()
+            .all(|e| e.iter().any(|x| matches!(x, NetEvent::Joined { .. })))
+    });
+    let joined: Vec<&str> = refs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ev[i + 1].iter().any(|x| matches!(x, NetEvent::Joined { .. })))
+        .map(|(_, c)| *c)
+        .collect();
+    assert!(
+        ok,
+        "only {} of 12 joined after {:.0} s: {joined:?}",
+        joined.len(),
+        sim.t
+    );
+    let slots: std::collections::BTreeSet<u8> = sim.stations[1..].iter().filter_map(|s| s.slot()).collect();
+    assert_eq!(slots.len(), 12, "slots not unique");
+}
+
+#[test]
+fn a_bulletin_reaches_everyone_through_fading() {
+    let calls = ["K1ABC", "W1AW", "N0CALL", "W5XYZ"];
+    let mut sim = net(&calls, 6.0, 5, |_| {});
+    sim.fade_db = 6.0;
+    sim.fade_tau_s = 15.0;
+    let long: String = (0..12).map(|i| format!("{i:02} {BULLETIN} ")).collect();
+    sim.stations[0].send(long.as_bytes());
+    let mut ev = vec![Vec::new(); 5];
+    let ok = run(&mut sim, &mut ev, 3600.0, |ev| {
+        ev[1..].iter().all(|e| bulletins(e).len() == 1)
+    });
+    assert!(
+        ok,
+        "after {:.0} s: {:?}",
+        sim.t,
+        ev[1..].iter().map(|e| bulletins(e).len()).collect::<Vec<_>>()
+    );
+    for e in &ev[1..] {
+        assert_eq!(bulletins(e), vec![long.clone()]);
+    }
+}
+
+#[test]
+fn direct_messages_are_compressed_for_members_that_announce_it() {
+    // NCS and K1ABC have compression on, W1AW not: NCS packs only K1ABC's
+    // messages, and both get exactly what was sent.
+    let calls = ["K1ABC", "W1AW"];
+    let mut sim = net(&calls, 10.0, 6, |c| c.compress = c.call != "W1AW");
+    let mut ev = vec![Vec::new(); 3];
+    assert!(run(&mut sim, &mut ev, 900.0, |ev| ev[1..]
+        .iter()
+        .all(|e| e.iter().any(|e| matches!(e, NetEvent::Joined { .. })))));
+    let texts: [&[u8]; 3] = [
+        b"K1ABC, please proceed to the Eastside shelter and relieve N1CALL at 2200.",
+        &[0x00, 0xFF, 0x80, 0x7F, 0x01],
+        b"",
+    ];
+    for t in texts {
+        assert!(sim.stations[0].send_to("K1ABC", t));
+        assert!(sim.stations[0].send_to("W1AW", t));
+    }
+    let got = |ev: &[NetEvent], call: &str| -> Vec<Vec<u8>> {
+        ev.iter()
+            .filter_map(|e| match e {
+                NetEvent::Message {
+                    to: Some(t),
+                    data,
+                    overheard: false,
+                    ..
+                } if t == call => Some(data.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let ok = run(&mut sim, &mut ev, 2400.0, |ev| {
+        got(&ev[1], "K1ABC").len() == 3 && got(&ev[2], "W1AW").len() == 3
+    });
+    assert!(ok, "K1ABC {:?}\nW1AW {:?}", got(&ev[1], "K1ABC"), got(&ev[2], "W1AW"));
+    let want: Vec<Vec<u8>> = texts.iter().map(|t| t.to_vec()).collect();
+    assert_eq!(got(&ev[1], "K1ABC"), want);
+    assert_eq!(got(&ev[2], "W1AW"), want);
+}
+
+#[test]
+fn ncs_can_message_one_member_and_close_the_net() {
+    let calls = ["K1ABC", "W1AW"];
+    let mut sim = net(&calls, 10.0, 6, |_| {});
+    let mut ev = vec![Vec::new(); 3];
+    assert!(run(&mut sim, &mut ev, 900.0, |ev| ev[1]
+        .iter()
+        .any(|e| matches!(e, NetEvent::Joined { .. }))));
+    assert!(sim.stations[0].send_to("K1ABC", b"K1ABC please QSY to 3.580 for traffic"));
+    assert!(!sim.stations[0].send_to("NOBODY", b"x"));
+    let ok = run(&mut sim, &mut ev, 1800.0, |ev| {
+        ev[1]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Message { to: Some(t), .. } if t == "K1ABC"))
+    });
+    assert!(ok);
+    assert!(
+        !ev[2]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Message { to: Some(t), overheard: false, .. } if t == "W1AW"))
+    );
+    sim.stations[0].close();
+    let until = sim.t + 120.0;
+    let ok = run(&mut sim, &mut ev, until, |ev| {
+        ev[1..].iter().all(|e| e.contains(&NetEvent::Closed))
+    });
+    assert!(ok, "members never heard the close");
+}
+
+/// Runs until every member other than `call` reports hearing it.
+fn until_all_hear(sim: &mut NetSim, call: &str, t_max: f64) -> bool {
+    let n = sim.stations.len() - 1;
+    sim.run_until(t_max, |s| {
+        let r = s.stations[0].roster(s.t);
+        r.len() == n
+            && r.iter()
+                .filter(|e| e.call != call)
+                .all(|e| e.hears.iter().any(|(c, _)| c == call))
+    })
+}
+
+#[test]
+fn a_message_ncs_missed_is_recovered_through_the_received_list() {
+    // N5LOST checks in normally; then NCS stops hearing it (it still hears
+    // NCS). W1AW and K1ABC both copy what it sends.
+    let calls = ["N5LOST", "W1AW", "K1ABC"];
+    let mut sim = net(&calls, 10.0, 7, |_| {});
+    assert!(
+        until_all_hear(&mut sim, "N5LOST", 1500.0),
+        "roster {:#?}",
+        sim.stations[0].roster(sim.t)
+    );
+    sim.snr[1][0] = -40.0;
+    let msg = "N5LOST: water over the road at the Stone River bridge, closed both ways";
+    sim.stations[1].send(msg.as_bytes());
+    let mut ev = vec![Vec::new(); 4];
+    let t = sim.t;
+    let ok = run(&mut sim, &mut ev, t + 1800.0, |ev| {
+        !messages_from(&ev[0], "N5LOST").is_empty()
+    });
+    assert!(
+        ok,
+        "NCS events {:#?}\nroster {:#?}",
+        ev[0],
+        sim.stations[0].roster(sim.t)
+    );
+    // N5LOST learns from the received list that NCS has it, though NCS
+    // never acknowledged a burst of its.
+    let until = sim.t + 900.0;
+    assert!(
+        sim.run_until(until, |s| s.stations[1].pending() == 0),
+        "N5LOST still holds it"
+    );
+    assert!(sim.stations[0].stats.rx_lists >= 1);
+    for e in &mut ev {
+        e.clear();
+    }
+    let until = sim.t + 300.0;
+    run(&mut sim, &mut ev, until, |_| false);
+    let relayers: Vec<&str> = (2..4)
+        .filter(|&i| sim.stations[i].stats.relayed_frames > 0)
+        .map(|i| calls[i - 1])
+        .collect();
+    assert_eq!(relayers.len(), 1, "relayed by {relayers:?}");
+}
+
+#[test]
+fn capability_flags_reach_the_roster_and_steer_relays() {
+    use ion::link::net::Caps;
+    // W5NO hears N5LOST best but will not relay; W5YES will.
+    let calls = ["N5LOST", "W5NO", "W5YES"];
+    let no = Caps {
+        qsy: true,
+        wide: true,
+        relay: false,
+        attended: false,
+        chorus: false,
+    };
+    let air: Arc<dyn Air> = Arc::new(ModelAir::default());
+    let mut stations = vec![NetStation::new(NetConfig::new(NCS, NET, true), air.clone())];
+    for (i, call) in calls.iter().enumerate() {
+        let mut cfg = NetConfig::new(call, NET, false);
+        cfg.seed = 900 + i as u64;
+        if *call == "W5NO" {
+            cfg.caps = no;
+            cfg.version = 0x23;
+        }
+        stations.push(NetStation::new(cfg, air.clone()));
+    }
+    let mut sim = NetSim::new(stations, 10.0, air, 8);
+    sim.set_path(1, 2, 16.0);
+    assert!(until_all_hear(&mut sim, "N5LOST", 1500.0));
+    let roster = sim.stations[0].roster(sim.t);
+    let w5no = roster.iter().find(|r| r.call == "W5NO").unwrap();
+    assert_eq!((w5no.caps, w5no.version), (Some(no), Some(0x23)));
+    let w5yes = roster.iter().find(|r| r.call == "W5YES").unwrap();
+    assert_eq!(w5yes.caps, Some(Caps::default()));
+    sim.snr[1][0] = -40.0;
+    sim.stations[1].send(b"N5LOST: generator down, on battery");
+    let mut ev = vec![Vec::new(); 4];
+    let until = sim.t + 1800.0;
+    let ok = run(&mut sim, &mut ev, until, |ev| {
+        !messages_from(&ev[0], "N5LOST").is_empty()
+    });
+    assert!(ok, "{:#?}", ev[0]);
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Relayed { via, .. } if via == "W5YES")),
+        "{:#?}",
+        ev[0]
+    );
+    assert_eq!(sim.stations[2].stats.relayed_frames, 0);
+}
+
+/// A net where `leaf` (the last station) hears only the stations in
+/// `hears` (index, SNR); nobody else hears it, and it hears nobody else.
+fn tree_net(calls: &[&str], hears: &[(usize, f32)], seed: u64) -> NetSim {
+    let mut sim = net(calls, 10.0, seed, |c| {
+        c.seek_after_s = 60.0;
+        c.seek_every_s = 40.0;
+    });
+    let leaf = calls.len();
+    for i in 0..leaf {
+        sim.set_path(i, leaf, -40.0);
+    }
+    for &(i, snr) in hears {
+        sim.set_path(i, leaf, snr);
+    }
+    sim
+}
+
+#[test]
+fn a_station_that_cannot_hear_ncs_joins_through_a_relay() {
+    let calls = ["W1AW", "K1ABC", "W5FAR"];
+    let mut sim = tree_net(&calls, &[(1, 8.0)], 9);
+    sim.stations[3].send(b"W5FAR: county road 12 washed out, sending photos by courier");
+    sim.stations[0].send(BULLETIN.as_bytes());
+    let mut ev = vec![Vec::new(); 4];
+    let ok = run(&mut sim, &mut ev, 3000.0, |ev| {
+        ev[3].iter().any(|e| matches!(e, NetEvent::Joined { .. })) && !messages_from(&ev[0], "W5FAR").is_empty()
+    });
+    assert!(
+        ok,
+        "after {:.0} s\nNCS {:#?}\nW5FAR {:#?}\nroster {:#?}",
+        sim.t,
+        ev[0],
+        ev[3],
+        sim.stations[0].roster(sim.t)
+    );
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Relayed { source, via } if source == "W5FAR" && via == "W1AW")),
+        "{:#?}",
+        ev[0]
+    );
+    let roster = sim.stations[0].roster(sim.t);
+    let far = roster.iter().find(|r| r.call == "W5FAR").unwrap();
+    assert_eq!(far.via.as_deref(), Some("W1AW"));
+    assert!(
+        roster
+            .iter()
+            .any(|r| r.call == "W1AW" && r.children == vec!["W5FAR".to_string()])
+    );
+    assert_eq!(sim.stations[3].ncs_call(), Some(NCS));
+    // A bulletin and a message for it, through its relay.
+    assert!(sim.stations[0].send_to("W5FAR", b"W5FAR copy, courier on the way"));
+    let until = sim.t + 2400.0;
+    let ok = run(&mut sim, &mut ev, until, |ev| {
+        bulletins(&ev[3]).len() == 1
+            && ev[3]
+                .iter()
+                .any(|e| matches!(e, NetEvent::Message { to: Some(t), .. } if t == "W5FAR"))
+    });
+    assert!(ok, "after {:.0} s\nW5FAR {:#?}", sim.t, ev[3]);
+    assert_eq!(bulletins(&ev[3]), vec![BULLETIN.to_string()]);
+}
+
+#[test]
+fn a_leaf_is_moved_when_its_relay_goes_silent() {
+    let calls = ["W1AW", "K1ABC", "W5FAR"];
+    let mut sim = tree_net(&calls, &[(1, 10.0), (2, 6.0)], 10);
+    let mut ev = vec![Vec::new(); 4];
+    let ok = run(&mut sim, &mut ev, 3000.0, |ev| {
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::CheckedIn { call, via: Some(_), .. } if call == "W5FAR"))
+    });
+    assert!(ok, "{:#?}", ev[0]);
+    let first = sim.stations[0]
+        .roster(sim.t)
+        .into_iter()
+        .find(|r| r.call == "W5FAR")
+        .unwrap()
+        .via
+        .unwrap();
+    let (dead, other) = if first == "W1AW" { (1, "K1ABC") } else { (2, "W1AW") };
+    // Its relay must hear it answering first, and the other member too.
+    let until = sim.t + 600.0;
+    sim.run_until(until, |s| {
+        s.stations[0]
+            .roster(s.t)
+            .iter()
+            .any(|r| r.call == other && r.hears.iter().any(|(c, _)| c == "W5FAR"))
+    });
+    for i in 0..4 {
+        if i != dead {
+            sim.set_path(dead, i, -40.0);
+        }
+    }
+    sim.stations[3].send(b"W5FAR: still here, relay lost");
+    let until = sim.t + 3000.0;
+    let ok = run(&mut sim, &mut ev, until, |ev| {
+        !messages_from(&ev[0], "W5FAR").is_empty()
+    });
+    assert!(
+        ok,
+        "after {:.0} s\nNCS {:#?}\nroster {:#?}",
+        sim.t,
+        ev[0],
+        sim.stations[0].roster(sim.t)
+    );
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Routed { call, via: Some(v) } if call == "W5FAR" && v == other)),
+        "{:#?}",
+        ev[0]
+    );
+    assert!(
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Relayed { source, via } if source == "W5FAR" && via == other))
+    );
+}
+
+/// A leaf NCS turns out to hear directly (say the path opened, or the leaf
+/// only joined through a relay because its check-in collided) leaves its
+/// relay and becomes an ordinary member, so it can relay for others in turn.
+#[test]
+fn a_leaf_ncs_can_hear_becomes_direct() {
+    let calls = ["W1AW", "K1ABC", "W5FAR"];
+    let mut sim = tree_net(&calls, &[(1, 8.0)], 11);
+    let mut ev = vec![Vec::new(); 4];
+    let ok = run(&mut sim, &mut ev, 3000.0, |ev| {
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::CheckedIn { call, via: Some(_), .. } if call == "W5FAR"))
+    });
+    assert!(ok, "{:#?}", ev[0]);
+    // The path to NCS opens both ways.
+    sim.set_path(0, 3, 10.0);
+    sim.stations[3].send(b"W5FAR: band is up, hearing you direct now");
+    let until = sim.t + 2400.0;
+    let ok = run(&mut sim, &mut ev, until, |ev| {
+        ev[0]
+            .iter()
+            .any(|e| matches!(e, NetEvent::Routed { call, via: None } if call == "W5FAR"))
+            && !messages_from(&ev[0], "W5FAR").is_empty()
+    });
+    assert!(
+        ok,
+        "after {:.0} s\nNCS {:#?}\nroster {:#?}",
+        sim.t,
+        ev[0],
+        sim.stations[0].roster(sim.t)
+    );
+    let roster = sim.stations[0].roster(sim.t);
+    assert_eq!(roster.iter().find(|r| r.call == "W5FAR").unwrap().via, None);
+    // W5FAR hears that it has no relay any more (the next acks burst).
+    let until = sim.t + 600.0;
+    let ok = sim.run_until(until, |s| s.stations[3].relay_call().is_none());
+    assert!(ok, "W5FAR still goes through {:?}", sim.stations[3].relay_call());
+}
+
+/// Bulletin repair of 50 pieces to 10 stations that each lose 10% of what
+/// they hear: coded repair (as many fresh pieces as the station furthest
+/// short needs) against resending from the lowest piece anyone lacks, and
+/// against resending every piece someone lacks.
+#[test]
+fn coded_repair_needs_fewer_sends_than_resending() {
+    use ion::link::net_code::{Decoder, PIECE, encode, sources};
+    use ion_dsp::dsp::NoiseGen;
+    let (k, stations, loss, trials) = (50usize, 10usize, 0.1f32, 400usize);
+    let mut g = NoiseGen::new(11);
+    let data: Vec<u8> = (0..k * PIECE).map(|i| (i * 7 + 3) as u8).collect();
+    let src = sources(&data);
+    let (mut rewind_total, mut sel_total, mut coded_total) = (0usize, 0usize, 0usize);
+    for _ in 0..trials {
+        // Go back to the lowest piece anyone lacks.
+        let mut have = vec![vec![false; k]; stations];
+        let mut from = 0;
+        let mut sent = 0;
+        while from < k {
+            for i in from..k {
+                sent += 1;
+                for h in have.iter_mut() {
+                    if g.uniform() >= loss {
+                        h[i] = true;
+                    }
+                }
+            }
+            from = have
+                .iter()
+                .map(|h| h.iter().position(|x| !x).unwrap_or(k))
+                .min()
+                .unwrap();
+        }
+        rewind_total += sent - k;
+        // Selective: every piece anyone lacks.
+        let mut have = vec![vec![false; k]; stations];
+        let mut want: Vec<usize> = (0..k).collect();
+        let mut sent = 0;
+        while !want.is_empty() {
+            for &i in &want {
+                sent += 1;
+                for h in have.iter_mut() {
+                    if g.uniform() >= loss {
+                        h[i] = true;
+                    }
+                }
+            }
+            want = (0..k).filter(|&i| have.iter().any(|h| !h[i])).collect();
+        }
+        sel_total += sent - k;
+        // Coded: the sources, then the largest shortfall in new pieces.
+        let mut dec: Vec<Decoder> = (0..stations).map(|_| Decoder::new(k)).collect();
+        let mut next = 0u32;
+        let mut need = k;
+        while need > 0 {
+            for _ in 0..need {
+                let piece = encode(&src, (next % 256) as u8);
+                for d in dec.iter_mut() {
+                    if g.uniform() >= loss {
+                        d.add((next % 256) as u8, &piece);
+                    }
+                }
+                next += 1;
+            }
+            need = dec.iter().map(Decoder::short).max().unwrap();
+        }
+        coded_total += next as usize - k;
+        for d in &dec {
+            assert_eq!(d.data(data.len()).unwrap(), data);
+        }
+    }
+    let per = |x: usize| x as f64 / trials as f64;
+    let (rewind, sel, coded) = (per(rewind_total), per(sel_total), per(coded_total));
+    assert!(coded < sel / 2.5, "selective {sel:.1} coded {coded:.1}");
+    assert!(coded < rewind / 2.5, "rewind {rewind:.1} coded {coded:.1}");
+    assert!(coded < 15.0, "coded {coded:.1}");
+}

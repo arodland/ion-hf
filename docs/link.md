@@ -1,0 +1,365 @@
+# Ion link: ARQ, gear shifting and HARQ
+
+The point-to-point link: connect, ARQ with gear shifting over the level
+ladder, turn-over and disconnect. Half duplex, burst by burst: the sending
+side (ISS) sends a data burst, the receiving side (IRS) answers with an ACK
+listing which frames of that burst arrived, and so on.
+
+Code, in `crates/ion/src/`:
+
+| Where | What |
+|---|---|
+| `level.rs` | the ladder: waveform, constellation, code rate and frame size of each level, and the gear-shift thresholds |
+| `link/station.rs` | `Station`: one end of a link; `link/station/config.rs` (`Config`, the defaults below), `gear.rs` (gear shifting), `sender.rs`, `receiver.rs` |
+| `link/frame.rs` | frames and tiny (header-only) messages |
+| `link/harq.rs` | hybrid ARQ with incremental redundancy |
+| `link/report.rs`, `chan.rs` | the channel report and the channel measurement behind it |
+| `slots.rs` | slice placement: which third of the passband a slice burst goes in |
+| `link/audio.rs` | bursts to audio and back through the PHYs, and every receiver at once |
+| `link/node.rs` | `Node`: a station driven by audio, with the CW sense |
+| `link/compress.rs` | optional compression of the stream |
+| `link/sim.rs` | a model channel and two-station simulator for the tests |
+
+The station knows nothing about audio: it hands out `Outgoing` bursts and
+takes `Incoming` ones, on the caller's clock in seconds. Tests:
+`crates/ion/tests/link.rs` (model channel), `ladder.rs` (real PHYs over
+simulated audio), `harq.rs`, `node.rs`; the ignored tables in `ladder.rs`
+and `link.rs` measure throughput and the overhead options.
+
+## The ladder
+
+Links open at the MFSK floor and climb. Between the floor and full-band
+OFDM sit the faster MFSK R1 rates and two slice levels: QPSK on 13 carriers
+(650 Hz, [phy.md](phy.md), Slice numerology), the same power on a quarter
+of the carriers.
+
+| # | Waveform | Modulation | Code rate | Frames | Low-PAPR | Threshold (dB) | Effective-SNR threshold (dB) | Air mean (dB) |
+|---:|---|---|---|---|:---:|---:|---:|---:|
+| 0 | MFSK R0 | 1 of 32 | 1/4 | short | | −12.0 | −13.0 | 0.0 |
+| 1 | MFSK R1 | 1 of 32 | 1/4 | short | | −9.0 | −11.0 | 0.0 |
+| 2 | MFSK R1 | 1 of 32 | 1/3 | short | | −8.0 | −10.3 | 0.0 |
+| 3 | MFSK R1 | 1 of 32 | 1/2 | short | | −6.5 | −8.9 | 0.0 |
+| 4 | MFSK R1 | 1 of 32 | 2/3 | short | | −4.5 | −7.4 | 0.0 |
+| 5 | OFDM slice | QPSK | 1/3 | long | yes | −3.0 | −5.0 | −2.7 |
+| 6 | OFDM slice | QPSK | 1/2 | long | yes | −0.5 | −2.5 | −2.5 |
+| 7 | OFDM long guard | QPSK | 1/4 | long | yes | +2.0 | −0.5 | −2.4 |
+| 8 | OFDM long guard | QPSK | 1/2 | long | yes | +6.5 | +3.8 | −2.4 |
+| 9 | OFDM | QPSK | 1/3 | long | yes | +2.5 | 0.0 | −2.5 |
+| 10 | OFDM | QPSK | 1/2 | long | yes | +5.5 | +3.0 | −2.5 |
+| 11 | OFDM | QPSK | 2/3 | long | yes | +8.0 | +5.0 | −2.5 |
+| 12 | OFDM | 8PSK | 2/3 | long | yes | +12.0 | +9.5 | −3.4 |
+| 13 | OFDM | 16QAM | 2/3 | long | | +13.5 | +11.0 | −5.2 |
+| 14 | OFDM | 16QAM | 3/4 | long | | +15.5 | +12.0 | −5.1 |
+| 15 | OFDM | 64QAM | 3/4 | long | | +20.5 | +17.0 | −7.3 |
+| 16 | OFDM | 64QAM | 5/6 | long | | +23.5 | +19.0 | −7.3 |
+
+- **Frames.** Short frames are 32 bytes: GF(32)-coded in MFSK
+  ([fec.md](fec.md)). Long frames are 180 bytes: the main LDPC code at the
+  level's rate. The full-band OFDM part of the ladder was chosen from
+  measured tables: at each speed, the pair needing the least SNR.
+- **Low-PAPR.** The QPSK and 8PSK OFDM levels send their data DFT-spread
+  and raised over the preamble ([phy.md](phy.md), Low-PAPR data symbols):
+  at the same peak power their codewords decode 1.6–2.1 dB lower on AWGN
+  and up to 2.2 dB lower on CCIR poor. 16QAM and 64QAM stay plain, where
+  the spread receiver loses on fading.
+- **Threshold** (`level::THRESHOLDS_DB`): the SNR (dB in 2.4 kHz) from
+  which each level loses at most about 10% of frames, midway between a
+  steady channel (AWGN) and a fading one (CCIR poor). MFSK from
+  [mfsk.md](mfsk.md); R1's faster rates from what their codes need
+  (`nb_profiles`); the long-guard levels from `numerology_tables`
+  ([phy.md](phy.md)); the slice and full-band levels from `threshold_table`
+  in `tests/ladder.rs` (1 dB grid, 40 bursts; `ION_GUARD=slice` or `long`
+  for those levels). The OFDM thresholds were measured on the 2.75 kHz
+  layouts and are used unchanged at 2.45 kHz.
+- **Effective-SNR threshold** (`level::EFF_THRESHOLDS_DB`): each level's
+  AWGN threshold, used against the effective SNR, which already holds what
+  fading costs (Channel report).
+- **Air mean** (`level::AIR_MEAN_DB`): each level's mean power on the air
+  against a steady carrier at `TX_LEVEL`, averaged over 8 bursts of 4–8 s
+  (`air_power_table`, checked by `slice_levels_average_full_ofdm_power`).
+  MFSK is the carrier; the OFDM levels average lower at the same drive
+  (their peaks are capped), QAM most.
+
+## Connect
+
+The caller sends a ConnReq frame (payload "FROMCALL TOCALL" and its
+highest level) in the floor waveform; the called station answers with a
+ConnAck, a header-only burst carrying the SNR it heard the call at, its
+channel class and slice slot, and whether both directions will compress.
+The call is tried `retries` (6) times. The first data burst then goes at
+the highest level the ConnAck's SNR allows, less `start_margin_db` (3 dB:
+the report was measured on the MFSK call, stronger than OFDM on the air),
+and a loss steps down from there. At +20 dB a link starts in 64QAM instead
+of climbing from the floor over five or six bursts.
+
+## Frames and tiny messages
+
+**Frames** fill one codeword each (32 bytes at the floor, 180 above):
+
+```text
+kind:u8  flags:u8  field:u24le  len:u8  payload[len]  zero pad  crc32:u32le
+```
+
+`field` is the byte offset of the payload in the sender's stream for data
+frames, and the session for control frames. Offsets, not frame numbers,
+let the sender re-cut unacknowledged data into the frame size of whatever
+level comes next, larger or smaller. The CRC-32 covers everything before
+it. ACK flags: the receiving side wants the turn, wants to disconnect, or
+has stored the missing frames for HARQ; on a ConnReq, the caller can
+compress.
+
+**Tiny messages** ride in a header-only burst: 4 bits of kind in the
+burst's `user` word plus a 16-bit `extra`, for messages that must get
+through at the floor in a fraction of a second: the tiny ACK (burst number
+mod 4, a bitmap of up to 6 frames, the SNR, the turn and disconnect
+wishes, the HARQ flag, the channel class and the slice slot), the ConnAck,
+Poll ("repeat your last ACK"), Turn ("your turn to send"), Idle ("still
+here, nothing to send"), DiscReq and DiscAck.
+
+## ACKs
+
+- Bursts of up to 6 frames, and bigger ones that arrived whole
+  (`tiny_ack_all`), are answered with a tiny ACK; others with a full ACK
+  frame (a 64-bit bitmap and the channel report). A tiny ACK takes 0.27 s
+  in OFDM against 0.44 s for a full ACK. A sender that does not know the
+  all-set tiny ACK reads it as "the first six arrived" and resends the
+  rest: slower, never wrong.
+- **Cheap ACKs** (`cheap_ack_margin_db`): an ACK goes back in the waveform
+  the burst came in, or in a shorter one when the burst's SNR is at least
+  this margin (0 dB) above where that waveform's header-only burst gets
+  through 90% of the time on CCIR poor (`cheap_ack_waves`): slice data is
+  acknowledged in full-band or long-guard OFDM from +2 dB (0.27 s instead
+  of 1.10 s), MFSK R0 data in MFSK R1 from −8 dB (1.12 s instead of
+  1.79 s). Every receiver listens to every waveform, so the peer hears it
+  either way; a Poll (a lost ACK) turns cheap ACKs off for 8 bursts.
+- **A lost ACK** is asked for again with a Poll rather than by resending
+  data, after the first try in the floor waveform.
+
+## Burst length
+
+At most `max_burst_s` (8 s; 8 s beats 4 s at every SNR on the audio link:
+fewer turnarounds per byte), or longer while the channel stays clean and
+steady (`burst_adapt`): after each burst whose fresh frames all arrived,
+with the level unchanged and the SNR reports within `burst_steady_db`
+(3 dB) of each other, the next may be twice as long, up to the length at
+which the level's fixed cost per round trip (preamble and header, the tiny
+ACK in its waveform, two turnarounds) is `burst_overhead` (12%) of the
+cycle, and at most `max_burst_long_s` (32 s). That is long for the slow
+levels (MFSK R0 has 2.3 s of preamble and header and a 1.8 s ACK for 5.7 s
+of data in an 8 s burst) and about `max_burst_s` from the long-guard levels
+up. Any loss, level change or jump in the SNR goes back to `max_burst_s`.
+`burst_climb_db` (off) would hold bursts short while the SNR is close to a
+faster level's entry; it measured even over short transfers and worse over
+20 kB.
+
+## Gear shifting
+
+The sending side picks each burst's level from the peer's ACKs:
+
+- **Aim** (`smooth_target`): from a cautious recent SNR, the lower of the
+  last report and the median of the last three. On a slow-fading channel
+  one good fade's report would otherwise send the link up into levels the
+  next fade kills. The target is the highest level whose threshold plus
+  `margin_db` the SNR reaches; `margin_db` is −1 dB, since a level a little
+  past its threshold loses a few frames, and with HARQ each costs a
+  fraction of a frame (−1 dB beat the +1 dB used without HARQ by 6.6% over
+  the audio link).
+- **Climb**: as clean ACKs come back, capped by the target, quickly while
+  far below it. The climb steps over the slice levels and the faster R1
+  rates once the SNR allows a full-band level past the first long-guard
+  one (`skip_slices_from`): they are only slow steps on the way up, and on
+  a long echo the slice fails where the long guard does not.
+- **Losses** (`hold_by_goodput`): a lost burst does not give up a level
+  whose recent success rate still beats the next one down on expected
+  throughput (its success above their speed ratio): on a fading channel a
+  burst lost in a fade is the channel's normal behaviour. R1 at 1/3 losing
+  a burst in three in a slow fade still moves more than R0.
+- **Holds**: a level that lost part of a burst is held off for
+  `loss_hold_s` (15 s); one that lost a whole burst for `fail_hold_s`
+  (30 s), doubled for each further failure up to `fail_hold_max_s`
+  (480 s). A fast-fading channel kills the OFDM levels whatever the SNR,
+  and the SNR report alone would climb straight back into them. After a
+  failure with SNR to spare (4 dB above the threshold) only the levels
+  whose guard is no longer than the failed one's are held: a slice level
+  that a 7 ms echo breaks says nothing about the long-guard levels built
+  for that echo.
+- **Stepping down** counts only levels whose waveform the channel class
+  allows, and from a long-frame level stops at the lowest allowed
+  long-frame level: the floor's short frames would re-cut everything in
+  flight into 22-byte pieces.
+- `power_aware` (off) moves each SNR report by the difference in mean
+  power on the air between the level it was measured on and the level
+  aimed at (Air mean above). An MFSK burst at full carrier power reads
+  2.4–2.8 dB better than the OFDM levels it sends the link to (QPSK
+  2.6–4.8 dB better than QAM); on IONOS SIM with it on the link lost
+  10–17% at 0 dB, and the margins would need retuning with it.
+
+## Channel report
+
+The receiving side measures every burst (`chan.rs`):
+
+- **Delay spread.** OFDM: the power delay profile from the
+  decision-directed channel of every data symbol, Hann-windowed across the
+  carriers; the shortest delay span holding 90% of its power above the
+  noise floor, less what a single path shows through the same window.
+  MFSK: from the energy the previous tone leaves in the current window
+  ([mfsk.md](mfsk.md)).
+- **Doppler spread** (2σ of a Gaussian spectrum): OFDM from the pilots'
+  correlation over a time lag, MFSK from the phase coherence of the two
+  halves of each tone.
+- **Effective SNR** (EESM): the AWGN SNR that would decode as well, over
+  the demapper's own per-cell SINR (OFDM), or from the spread of the tone
+  energies mapped onto OFDM cells (MFSK). On a flat steady channel it
+  equals the mean SNR. The EESM entry points come from the ladder's AWGN
+  thresholds: 8PSK from +9 dB, 16QAM +11, 64QAM +17.
+
+`tests/chan_meas.rs` measured delay spans of 0–3 ms on AWGN, CCIR good and
+poor, and 5–7.5 ms on the 6–7 ms profiles; Doppler 0–3 Hz on the 1 Hz
+profiles and 8–12 Hz on the 10 Hz ones. Echoes past a 4 ms guard hide
+from the decision-directed profile (the decisions follow a channel
+estimate whose model spans at most the guard) and show as excess
+decision-directed noise instead: 3.4–9 dB excess on a 7 ms echo from
++8 dB, under 0.5 dB on AWGN and CCIR poor; past a 2 dB threshold the echo
+is reported as 6 ms.
+
+The receiver averages the measurements over the link's data bursts
+(newest weighted 0.5) and carries back two class bits and an SNR in every
+ACK (`link/report.rs`):
+
+- *echo*: the smoothed delay span exceeds `ECHO_MS` (4 ms, the guard of
+  the slice and full-band OFDM levels): only the MFSK levels and the long
+  guard are used;
+- *doppler*: the smoothed Doppler spread exceeds `DOPPLER_HZ` (6 Hz): only
+  MFSK is used;
+- the SNR field carries the effective SNR instead of the mean
+  (`eff_snr`), aimed at with the effective-SNR thresholds.
+
+A tiny ACK carries the class (and the slice slot) in its kind nibble; a
+ConnAck in bits 6–7 of `extra` (bits 0–5 are its SNR, the slot in 9–10); a
+full ACK four more bytes: class and slot, effective SNR, delay span
+(0.25 ms steps) and Doppler spread (0.25 Hz steps). The sender keeps off
+the waveforms the class rules out (`pick_family`); holding off a level
+that lost a whole burst stays as the fallback. So the sender picks its
+waveform from the measurement instead of learning by losing bursts.
+
+## HARQ
+
+A long frame that fails is kept by the receiver as LLRs, and the next
+burst opens with more parity of it instead of a resend (`link/harq.rs`).
+A long data burst is `[P parity slots][F fresh frames]`. The parity slots
+continue, in order, the codewords that failed in the previous burst (the
+*stored set*): slot i carries the next bits of that codeword's
+transmission order ([fec.md](fec.md)), up to the next rate boundary of
+the code (`Rate::ALL`) or, once the whole mother code has been sent, a
+chase repeat of one frame's length. Nothing in the burst names them: both
+sides derive the layout from the stored set, and two check bits in the
+burst's `user` word (0 for none, else 1 + P mod 3) catch a disagreement.
+A codeword that has had two full passes of the mother code without
+decoding is dropped by both sides and sent fresh. LLRs combine across a
+level change (`llrs_combine_across_a_level_change`), but stored codewords
+are not continued in another guard
+(`stored_codewords_are_not_continued_in_another_guard`).
+
+## Slice placement
+
+The receiving side watches the three thirds of the passband a slice burst
+can sit in (the centre and ±800 Hz) and names the cleanest in its ACKs
+(`slots.rs`, `SlotMeter`); the sender puts slice bursts there
+(`slice_slots`), and the receivers listen in all three. What the link
+steps aside from are signals inside the passband that come and go (a
+station keying, a carrier, a beacon group): a burst that overlaps one is
+lost whatever the SNR, and a slice can move clear of it.
+
+- The meter is a 2048-point FFT (23 Hz bins, 47 frames a second), each
+  third compared with the whole passband in the same frame, so the radio's
+  AGC, which moves all three together, cancels. Frames under the link's own
+  bursts are left out.
+- A *hit* is a bin in the third `HIT_DB` (13 dB) over the passband's
+  median: at 10 dB white noise alone crosses it in about 3% of frames, at
+  13 dB about one in 30 000. *Excess* is the third's median over
+  the passband's (a wideband signal or noise source there).
+- A third's score is its share of frames with a hit plus 1 point per dB of
+  excess, averaged over `MEMORY_S` (8 s: signals in the passband come and
+  go within tens of seconds), with 5 points of hysteresis. Slot 0 (the centre) is also what a station
+  without slots uses.
+
+## Turn-over, idle and disconnect
+
+- The receiving side asks for the turn with a flag in its ACKs. When the
+  sender has nothing left in flight it sends Turn; the new sender starts
+  where the peer was getting through, capped by what it hears itself (the
+  channel is the same both ways), with a first burst no longer than
+  `max_burst_s`. With nothing queued, it checks in at once so the peer sees
+  it took over.
+- A sender with nothing to send checks in with an Idle every `idle_s`
+  (10 s). Nothing heard for `link_timeout_s` (120 s) ends the link.
+- Either side can ask to disconnect (a flag in the ACKs, or the sender's
+  own wish); once nothing is left in flight the sender sends DiscReq and
+  the other side answers DiscAck. The goodbye gets `retries` tries.
+
+## CW ID
+
+`Node` hears a CW ID on the Ion centre with `CwSense`: per 20 ms, the
+strongest of three bins about the centre against six well clear of it (a
+burst fills them all alike, a keyed tone only the first). It hears an ID
+reliably to about −6 dB in 3 kHz; below that an ID may cost the peer one
+wasted poll. Ion HF sends the ID itself ([app.md](app.md)).
+
+## Compression
+
+With `Config::compress` on at both ends (agreed in the ConnReq and
+ConnAck), the stream goes as records of compressed or raw bytes
+(`link/compress.rs`): a small context-mixing model after lpaq1 (orders 0–3
+and the current word, binary arithmetic coding, integer arithmetic so both
+ends agree bit for bit), primed before the first message with on-air text
+(`crates/ion/data/chat_train.txt`: net scripts, check-ins, shelter and
+weather reports, radiograms, conversation), so short messages compress from
+their first byte. Each direction keeps its model for the whole connection
+and goes on learning from every message; the ARQ stream is exact and in
+order, so both ends stay in step. An end-of-message flag costs about 6 bits
+per message. Records are at most 1024 bytes; incompressible data grows by
+one header byte per record. `tests/compress.rs` measures it on
+`chat_heldout.txt`, written separately from the priming text; the
+parameters were chosen on a split of the training text alone
+(`tuning_table`). Winlink's B2F messages arrive already compressed, so Ion
+HF leaves compression off on links; nets compress direct messages
+([net.md](net.md)).
+
+## Defaults (`Config::new`)
+
+| Field | Default | |
+|---|---|---|
+| `turnaround_s` | 0.3 s | from the end of the peer's burst to our audio |
+| `max_burst_s` / `max_burst_long_s` | 8 s / 32 s | burst length |
+| `margin_db` | −1 dB | over each level's threshold |
+| `retries`, `reply_slack_s` | 6, 1 s | the call, the goodbye and the turn |
+| `idle_s`, `link_timeout_s` | 10 s, 120 s | |
+| `loss_hold_s`, `fail_hold_s`, `fail_hold_max_s` | 15 s, 30 s, 480 s | |
+| `harq` | on | |
+| `pick_family`, `eff_snr` | on, on | channel report |
+| `burst_adapt`, `burst_overhead`, `burst_steady_db` | on, 12%, 3 dB | |
+| `tiny_ack_all`, `cheap_ack_margin_db` | on, 0 dB | |
+| `smooth_target`, `hold_by_goodput` | on, on | |
+| `power_aware`, `burst_climb_db` | off, off | |
+| `start_margin_db` | 3 dB | |
+| `slice_slots` | on | |
+| `compress` | off | |
+
+`tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
+`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`).
+
+## Over the air
+
+The OFDM levels go out `OFDM_AIR_GAIN_DB` (1.2 dB) above their simulated
+level: every waveform is built to peak at `TX_LEVEL`, where the steady MFSK
+and CW carriers set the station's power, and OFDM at the same peak reads
+lower on a power meter.
+The slice levels get a further 0.6 dB (1/3) and 0.95 dB (1/2)
+(`level_trim_db`), so every OFDM level averages the same power as the
+full-width QPSK levels; the total never exceeds 3 dB over the steady
+carriers (`OFDM_AIR_GAIN_MAX_DB`), and the steady carriers never change.
+
+`crates/ion/examples/sounding.rs` writes and decodes an over-the-air test
+of the whole ladder: a numbered sequence of bursts, every waveform and
+level from the floor up, between two CW IDs, for a recording elsewhere
+(a public KiwiSDR or WebSDR, say) to be checked against.

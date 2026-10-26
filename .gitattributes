@@ -1,0 +1,5 @@
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Corpus and priming text: part of the compression format (`ion::link::compress::PRIME`).
+crates/ion/data/*.txt text eol=lf

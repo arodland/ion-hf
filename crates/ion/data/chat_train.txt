@@ -1,0 +1,321 @@
+QST QST QST this is N0CALL net control for the Central Ohio ARES Tuesday net.
+This net meets every Tuesday at 2000 local on the 146.760 repeater and on HF as conditions allow.
+This is a directed net. Please hold your traffic until called by net control.
+Any stations with emergency or priority traffic please call now.
+Nothing heard. We will now take check-ins by county, starting with Franklin County.
+Franklin County stations please call now.
+KD8QRT, Tom, Franklin County, no traffic.
+W8ERD, Ed, Grove City, no traffic, short time.
+KC8NUV mobile in Westerville, no traffic.
+N8BHL, Bob, Delaware County, one item for the net.
+Roger KD8QRT, W8ERD, KC8NUV and N8BHL with one item. Any further Franklin County stations?
+Thanks all, now taking check-ins from Delaware and Union counties.
+KE8FTW, Lisa, Marysville, Union County, no traffic.
+AB8DX in Sunbury, no traffic, will stand by for relays.
+N8BHL go ahead with your item.
+The Delaware County EMA asks all members to update their contact sheets before the end of the month.
+Thanks Bob, I will pass that along in the net minutes.
+Last call for check-ins, any late or missed stations please call now.
+K8RDN, Rick, Pickaway County, late check-in, no traffic.
+Roger Rick, welcome to the net.
+We had 14 check-ins tonight with 1 item of traffic. Thanks to everyone who checked in.
+This is N0CALL closing the Central Ohio ARES net at 2032 local and returning the repeater to normal use. 73.
+
+W8OSU this is N0CALL on Ion, are you on frequency?
+Good evening Mike, I copy you fine here. Signal is a little weak but solid.
+Name here is Jim, QTH is Columbus Ohio, running 50 watts into an end fed wire.
+How is the band treating you tonight?
+Lots of QSB here, the signal comes and goes every few seconds.
+I have the antenna up about 35 feet in an inverted V.
+Did you get the new version of the software installed?
+Yes, it installed fine, but the waterfall settings were reset to defaults.
+Try turning the AGC off and set the audio level so the noise floor sits near the bottom.
+Roger, that helped a lot. I can see your trace clearly now.
+The weather here is cold and windy, about 38 degrees with light rain.
+Same here, we might get some snow by Thursday.
+I need to go help with dinner. Thanks for the QSO Mike, 73 and good night.
+73 Jim, hope to work you again next week.
+
+CQ CQ CQ de K8EQC K8EQC K
+K8EQC de N0CALL N0CALL KN
+N0CALL de K8EQC GM OM TNX FER CALL UR RST 579 579 NAME DAVE QTH AKRON OH HW CPY? N0CALL de K8EQC KN
+K8EQC de N0CALL R R FB DAVE TNX FER RPT UR RST 589 589 NAME JIM JIM QTH COLUMBUS OH RIG IC7300 PWR 50W ANT DIPOLE HW? K8EQC de N0CALL KN
+N0CALL de K8EQC R FB JIM WX HR CLOUDY ES COLD TEMP 40F RIG FT991 ES VERTICAL TNX QSO 73 ES GL N0CALL de K8EQC SK
+K8EQC de N0CALL TNX FER NICE QSO DAVE 73 ES GUD DX SK
+
+Net control, this is KD8QRT at the Westland High School shelter.
+The shelter opened at 1400 and we have 46 occupants registered so far.
+We have 12 cots available and expect another bus within the hour.
+Requesting 30 cases of bottled water and baby formula, size 4 diapers.
+Shelter is on generator power, fuel good for about 10 hours.
+Red Cross has two volunteers on site, need at least two more for the overnight shift.
+Roger KD8QRT, I will relay your request for water, formula and diapers to the EOC.
+Please send a status update every two hours or when the count changes by more than 10.
+Shelter status 1800: 61 occupants, 0 cots available, water received, still need diapers.
+Two occupants need medical attention, non urgent, EMS has been notified.
+Shelter status 2000: 64 occupants, generator refueled, power company says restore in 6 to 8 hours.
+
+EOC this is W8ERD at Grant Medical Center.
+Hospital is on generator power. Emergency department is open but at capacity.
+Diverting all non-critical ambulance traffic to Riverside until further notice.
+Landline phones are down, cell service is intermittent, internet is down.
+We have a Winlink station up and can receive email through the radio.
+Roger W8ERD, copy hospital on generator, ED at capacity, diverting non-critical traffic.
+Please advise if you need fuel delivery for the generator.
+Generator fuel is good for 48 hours, no delivery needed at this time.
+
+Net control, KC8NUV with a SKYWARN report.
+Quarter size hail at State Route 3 and Polaris Parkway at 1945 local.
+Estimated wind gusts 50 to 60 mph, several large tree limbs down.
+Heavy rain, visibility under a quarter mile, ponding on the roadway.
+Roger KC8NUV, quarter size hail and 50 to 60 mph gusts at Route 3 and Polaris, 1945. Relaying to the weather service.
+Wall cloud reported southwest of Delaware moving northeast at 30 mph.
+No rotation observed at this time, will continue to monitor.
+Funnel cloud reported by the public near Ostrander, not confirmed by a trained spotter.
+Power lines down across Sawmill Road north of Hyatts Road, road is blocked.
+All clear from my location, rain has ended, sky clearing to the west.
+
+NR 145 R HXG N0CALL 22 COLUMBUS OH 1830 OCT 21
+TO ROBERT SMITH 1520 ELM STREET DAYTON OH 45402 937 555 0142
+ARRIVED SAFELY AT SHELTER X ALL FAMILY MEMBERS WELL X WILL CALL WHEN PHONES WORK X LOVE
+SIGNED MARY SMITH
+NR 146 P N0CALL 12 COLUMBUS OH 1915 OCT 21
+TO FRANKLIN COUNTY EOC LOGISTICS
+REQUEST TWO PALLETS BOTTLED WATER AND ONE HUNDRED BLANKETS FOR WESTLAND SHELTER
+SIGNED KD8QRT SHELTER COMMUNICATIONS
+QTC 2 for the Ohio section traffic net, one routine and one priority.
+Station ready to copy, go ahead with your first message.
+Message received, QSL number 145. Go ahead with the next one.
+All traffic cleared, no further traffic for the section net.
+
+To: Delaware County EOC
+From: Sunbury Fire Station 2
+Subject: Generator fuel request
+We need approximately 25 gallons of diesel for the station generator by 1600 today.
+Current fuel level is one quarter tank, generator running at half load.
+Point of contact is Captain Hughes, reachable on the fire tactical channel.
+Please confirm when delivery is scheduled.
+
+Status report from the Union County EOC as of 0900 local.
+Roads closed: US 33 eastbound at Industrial Parkway, State Route 4 north of Marysville.
+Power outages affecting about 4,200 customers, crews working, estimated restore tonight.
+Two warming centers open: Marysville library and the First Baptist Church.
+No injuries reported. Next update at 1200 or sooner if conditions change.
+
+All well here, power is out but we have the wood stove going. Tell Mom not to worry. Love, Sue.
+We are staying with the Johnsons on Maple Street until the water goes down.
+Please call Aunt Carol and tell her we are fine and will be home Sunday.
+Our house took some roof damage, no one was hurt. Insurance adjuster comes Monday.
+Need a ride to the pharmacy for insulin, can anyone on the net help?
+
+Mobile check: N8BHL at I-71 mile marker 121 northbound, ETA EOC 1415.
+KE8FTW arrived at the Marysville EOC, setting up the HF station now.
+AB8DX departing Sunbury, heading to the Red Cross chapter with supplies.
+Position report: K8RDN at the Circleville fairgrounds staging area.
+Relay for W8OSU: he is at the hospital and will be on the air at 1600.
+
+Is this frequency in use? This is N0CALL.
+QRL? de N0CALL
+Frequency is in use, please QSY.
+Sorry, I did not hear anyone. Moving up 3 kHz.
+I am listening on 7.103 MHz, please come back if you copy.
+Can you move up to 14.105? The noise is too high here on 40 meters.
+I am going to try the 80 meter band tonight after 9 pm.
+Signal is fading out, let us try again in a few minutes.
+You dropped out for a minute there, please repeat your last.
+Could you send that again? I missed the part about the generator.
+Copy all, thanks for the information.
+Roger, understood, will do.
+Stand by one, I have to answer the phone.
+I am back, sorry about that.
+Please go ahead.
+Go ahead, I am listening.
+
+Weekly digital net check-in: N0CALL, Jim, Columbus, EN80, running Ion at 25 watts, no traffic.
+KD8QRT checking in via Winlink, 20 watts, no traffic.
+W8ERD here on the digital net, Grove City, solid copy on everyone, no traffic.
+N8BHL Delaware, signals weak tonight, about 10 percent errors, no traffic.
+Thanks for the check-ins, the digital net is now closed. Next week same time and frequency.
+
+I am trying out the new Ion ARQ mode tonight. So far it is working great.
+It started out slow at the MFSK floor and then climbed up once the band settled.
+The transfer took about two minutes for a 4 kilobyte file.
+What kind of throughput are you seeing on 40 meters?
+Around 300 bits per second with fading, much faster on the quiet nights.
+Have you tried it on NVIS with a low dipole?
+Not yet, but the EC wants us to test it for the county drill next month.
+The drill is on Saturday the 14th from 0900 to 1300 local.
+We will need operators at the EOC, both hospitals and the three shelters.
+Please sign up on the ARES website if you can help.
+I can cover the morning shift at the EOC, but I need to leave by noon.
+Put me down for the hospital, I will bring my go kit and a battery.
+Does anyone have a spare power supply? Mine failed last week.
+I have an extra 30 amp supply you can borrow for the drill.
+
+Thanks for the call, good to hear you on the air again.
+Good morning everyone, coffee is on and the band is open.
+Good afternoon from sunny Florida, temperature is 82 degrees.
+Hello from the cabin, running on solar and a 100 amp hour battery.
+It has been a while since we talked, how is the new tower coming along?
+The tower is up, now I just need to get the beam on it before winter.
+I lost my antenna in the storm last week, using a mobile whip for now.
+Your signal is much better than last week, the new antenna must be working.
+I am running 100 watts into a hexbeam at 30 feet.
+The rig is an old FT-857 but it still works fine on digital modes.
+I just got my General ticket last month, this is my first HF contact on digital.
+Congratulations on the upgrade, welcome to HF.
+Did you see the aurora last night? It was amazing up here.
+Solar flux is 160 tonight, the bands should be in good shape.
+The K index went up to 5 this afternoon, lots of absorption on the high bands.
+Ten meters was wide open to Europe this morning.
+I worked Japan on 20 meters yesterday with only 50 watts.
+Propagation has been strange all week.
+My wife is calling me for dinner, have to run. 73.
+Nice chatting with you, catch you on the next net.
+See you on Tuesday, 73 and stay safe.
+
+ICS 213 GENERAL MESSAGE
+Incident: Winter storm response
+To: Franklin County EOC Planning Section
+From: Westland Shelter Communications
+Date/Time: 10/21 1830
+Message: Shelter count 61. Requesting 2 additional cots, 50 blankets, and one more volunteer for the night shift. Generator fuel adequate until 0800.
+Approved by: Shelter Manager J. Ortiz
+Reply: Request received, cots and blankets on the 2100 delivery truck, volunteer assigned.
+
+The repeater is down, please move to the simplex frequency 146.520.
+We are activating the emergency net on 3.873 MHz, all stations stand by.
+This is a drill, this is a drill. All traffic for this net is exercise traffic.
+End of exercise, end of exercise. Thank you all for participating.
+The EOC is now fully staffed and the net will continue until 2200.
+Net control is handing off to KD8QRT for the next two hours.
+KD8QRT taking net control at 2005 local. All stations stand by for check-ins.
+Please identify every 10 minutes and at the end of each exchange.
+Keep transmissions short and leave a pause for priority traffic.
+
+Winlink message sent to the county EOC at 1430 local, please confirm receipt.
+Confirmed, I see your message in the inbox. Thank you.
+The RMS gateway in Delaware is offline, use the Marion gateway instead.
+I have three messages queued for the state EOC, will send when the path improves.
+The email from the hospital came through with the attachment, 12 kilobytes.
+Please keep messages short, under 2,000 characters, the path is very slow tonight.
+P2P connection worked fine on 80 meters, took about 4 minutes for the whole message.
+
+Water level on the Scioto at the Frank Road gauge is 18.5 feet and rising.
+Flood stage is 20 feet, crest expected near 21.2 feet early Wednesday morning.
+Evacuation ordered for the low areas south of Frank Road, door to door notification in progress.
+Sandbag station open at the township garage on Harrisburg Pike until 2200.
+Bridge on County Road 12 is under water and closed in both directions.
+The river is starting to fall at the Circleville gauge, down 0.4 feet since noon.
+
+Weather here is cloudy and 45 degrees with a light wind from the north.
+It has been raining all day, about 2 inches so far.
+Snow started at 1600, already 3 inches on the ground, roads are slick.
+Clear skies and cold, 22 degrees this morning.
+Thunderstorm moving through now, lightning nearby, I am going to disconnect the antenna.
+Tornado warning for the northern part of the county until 1730.
+The warning has expired, no damage reported in our area.
+
+I copy you about 60 percent, can you slow down?
+Please spell your name phonetically.
+My call is November Zero Juliet Lima Foxtrot.
+Name is Jim, Juliet India Mike.
+Say again your call sign, you were covered by noise.
+Station calling, please say again, only got the last two letters.
+Thanks for the relay, I could not hear him at all from here.
+Can anyone relay for K8RDN? He is very weak at my location.
+I can hear him, I will relay.
+K8RDN says he has no traffic and is checking out.
+Station checking out, thanks for the net.
+I need to check out early, no traffic, 73 everyone.
+
+Good evening, this is W8ERD, net control for the Franklin County ARES/RACES net.
+This is a training net, all traffic is exercise traffic unless stated otherwise.
+Stations checking in please give your call, name, location and whether you have traffic.
+We will start with stations that have traffic, then mobiles and portables, then all others.
+N8EQB with one routine message for the EOC.
+KD9GHJ, Sarah, Hilliard, no traffic, available for assignment.
+W8LV portable at the Reynoldsburg fire station, no traffic.
+KE8MZT, Paul, Worthington, checking in with no traffic and good copy on all stations.
+Net control copies N8EQB with traffic, KD9GHJ, W8LV and KE8MZT. N8EQB, go ahead with your message.
+Message is for the EOC duty officer: the backup radio room key is now kept in the lock box at the front desk.
+Roger, message copied, I will deliver it to the duty officer tonight.
+Do we have any stations with announcements?
+The monthly VE session is this Saturday at 1000 at the Red Cross building, walk-ins welcome.
+Reminder that the county exercise is on the 14th, sign up sheets are on the group email list.
+No further announcements heard. Thank you all for checking in.
+Net control is now securing the net. Thanks to the repeater trustee for the use of the machine.
+
+KD9GHJ de N0CALL, how is your new antenna working?
+It works great on 40 and 80, but the SWR is high on 20 meters.
+Try trimming a few inches off each leg, or add a tuner at the feed point.
+I will try that this weekend if the weather is good.
+Your signal is S9 plus 10 here, very strong tonight.
+You are about S5 with some fading, but perfectly readable.
+I have to go take the dog out, back in a minute.
+OK, standing by.
+I am back. Where were we?
+We were talking about the tuner. I use an automatic one at the antenna.
+Which model? I have been looking at a few of them.
+It is a remote autotuner, it handles 100 watts and tunes almost anything.
+Thanks, I will look it up. Have a good night and 73.
+73, talk to you on the net Tuesday.
+
+R R TNX FER RPT
+UR SIG 599 FB
+QTH HR IS DUBLIN OH
+NAME HR IS BOB BOB
+RIG HR IS KX3 ES 5W TO A WIRE
+WX HR SUNNY ES WARM
+HW CPY? BK
+SOLID CPY OM TNX
+GUD LUCK ES 73 SK
+TU 73 GL
+QRZ? DE N0CALL K
+QRS PSE, UR TOO FAST FER ME
+QSB HR, PSE RPT UR NAME
+QRM ON FREQ, QSY UP 2?
+
+From: KD8QRT@winlink.org
+To: n0call@winlink.org
+Subject: Shelter staffing for tonight
+Jim, we have three operators lined up for the overnight at Westland: KC8NUV, W8OSU and me.
+I will bring the spare battery and the second laptop.
+Can you confirm the Winlink gateway on 80 meters is still working? I could not connect yesterday afternoon.
+Thanks, Tom
+Re: Shelter staffing for tonight
+Tom, the gateway is working, the sysop rebooted it this morning. Thanks for covering the night shift.
+Please send me the shelter census at 2200 and 0600.
+Jim
+
+Damage assessment report, Grove City sector, 1100 local.
+Roof damage to 12 homes on Haughn Road, two homes with trees through the roof, residents relocated.
+Hoover Road closed between Orders Road and Stringtown Road due to downed lines.
+Traffic signals out at Broadway and Stringtown, police directing traffic.
+No injuries reported in this sector.
+Report compiled by W8ERD for the Franklin County EOC.
+
+Hospital net roll call. Please report your status: green, yellow or red.
+Riverside Methodist, status green, all systems normal.
+Mount Carmel East, status yellow, on generator, ED open.
+OSU Wexner, status green, no needs at this time.
+Nationwide Children's, status green, phones working.
+Grant Medical Center, status yellow, ED at capacity, diverting non-critical patients.
+Thank you, all hospitals accounted for. Next roll call at 1600.
+
+I am heading out now, will be mobile for the next hour.
+Back at the house now, QRV on HF.
+Going QRT for the night, 73 all.
+Sorry I missed the net, I was stuck at work.
+Can someone send me the net minutes from last week?
+The minutes are posted on the club website under the ARES page.
+Did anyone hear the bulletin from the section manager?
+Yes, there is a statewide exercise next month, details to follow by email.
+How many operators do we need for the marathon on Sunday?
+We need 20 operators for the aid stations and four for the finish line.
+I can help at aid station 5, I will bring my own radio and a chair.
+Thanks Lisa, I have you down for aid station 5 from 0700 to 1200.
+The runner tracking spreadsheet is on the shared drive.
+Please report the bib numbers of any runners who drop out.
+Runner 1427 dropped out at aid station 3, being transported to the finish by the sag wagon.
+Medical needed at mile 18, runner down, conscious and breathing, ambulance requested.

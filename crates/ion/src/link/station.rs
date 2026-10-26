@@ -1,0 +1,822 @@
+//! One end of an Ion link: connect, ARQ with gear shifting, HARQ,
+//! turn-over and disconnect, burst by burst and half duplex. It knows
+//! nothing about audio: it hands out [`Outgoing`] bursts and takes
+//! [`Incoming`] ones on the caller's clock. The protocol: `docs/link.md`.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
+
+use super::compress::{StreamDecoder, StreamEncoder};
+use super::frame::{Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
+use super::harq::{self, HarqRx, Soft};
+use super::report::{ChanClass, ChanTrack};
+use crate::chan::ChannelMeas;
+use crate::fec;
+use crate::level::{FLOOR, FLOOR_WAVE, LADDER, Wave};
+
+mod config;
+mod gear;
+mod receiver;
+mod sender;
+
+pub use config::Config;
+pub use receiver::cheap_ack_waves;
+
+/// Burst code of a header-only burst (on the air: 14, [`air_code`]).
+pub const TINY: usize = 62;
+/// Burst code of a burst holding one control frame (short code; on the
+/// air: 15).
+pub const CONTROL: usize = 63;
+/// Bytes of a control frame.
+pub const CONTROL_BYTES: usize = fec::K_SHORT / 8;
+/// Most bytes in flight.
+pub const WINDOW_BYTES: usize = 64 * 1024;
+/// Most frames in one burst (a full ACK's bitmap is 64 bits).
+const MAX_FRAMES: usize = harq::MAX_SLOTS;
+/// Bitmap of a tiny ACK with every bit set: for a burst of more than
+/// [`TINY_ACK_FRAMES`] frames, "all of them arrived".
+const TINY_ALL: u64 = (1 << TINY_ACK_FRAMES) - 1;
+
+/// Air time of bursts, from the PHYs and FEC in use.
+pub trait Air: Send + Sync {
+    /// Seconds on air: `bits` coded bits of `code` (a ladder level, or
+    /// [`CONTROL`]; [`TINY`] with 0 bits) in `wave`. See
+    /// [`Outgoing::coded_bits`].
+    fn duration(&self, wave: Wave, code: usize, bits: usize) -> f64;
+
+    /// Most coded bits one data burst of ladder level `code` can carry
+    /// (the PHY's symbol count limit). Unlimited unless the PHY says.
+    fn max_bits(&self, _wave: Wave, _code: usize) -> usize {
+        usize::MAX
+    }
+}
+
+/// Coded bits of `frames` whole frames of burst `code`.
+pub fn frame_bits(code: usize, frames: usize) -> usize {
+    match code {
+        TINY => 0,
+        CONTROL => frames * fec::n_short(),
+        l => frames * LADDER[l].coded_bits(),
+    }
+}
+
+/// Longest a wait for an answer is stretched while the peer is heard on
+/// the air ([`Station::peer_busy`]): a CW ID ahead of it, with room.
+pub const PEER_BUSY_MAX_S: f64 = 20.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Idle,
+    Listening,
+    Connecting,
+    Connected,
+    Disconnecting,
+    Disconnected,
+    /// Gave up: no answer after every retry, or the peer went silent.
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Information sending station: sends data, receives ACKs.
+    Sender,
+    /// Information receiving station: receives data, sends ACKs.
+    Receiver,
+}
+
+/// A burst to transmit.
+#[derive(Clone, Debug)]
+pub struct Outgoing {
+    pub wave: Wave,
+    /// Ladder level, [`CONTROL`] or [`TINY`].
+    pub code: usize,
+    /// For the PHY header: code in bits 0–3, session 4–11, burst number or
+    /// tiny kind 12–15.
+    pub user: u16,
+    /// Tiny message body (header-only bursts).
+    pub extra: u16,
+    /// Encoded frames, each one codeword's information bytes.
+    pub frames: Vec<Vec<u8>>,
+    /// Per frame, the span of its transmission order sent: (start, bits).
+    /// Empty: every frame whole, from position 0. A long frame sent from
+    /// a later position is a HARQ increment (see [`harq`]).
+    pub spans: Vec<(usize, usize)>,
+}
+
+impl Outgoing {
+    /// Coded bits of the burst's data part.
+    pub fn coded_bits(&self) -> usize {
+        if self.spans.is_empty() {
+            frame_bits(self.code, self.frames.len())
+        } else {
+            self.spans.iter().map(|s| s.1).sum()
+        }
+    }
+
+    /// Span of frame `i`: (start, bits).
+    pub fn span(&self, i: usize) -> (usize, usize) {
+        self.spans.get(i).copied().unwrap_or((0, frame_bits(self.code, 1)))
+    }
+}
+
+/// A burst received.
+#[derive(Clone, Debug)]
+pub struct Incoming {
+    pub wave: Wave,
+    pub code: usize,
+    pub user: u16,
+    pub extra: u16,
+    /// One entry per codeword; `None` if it failed to decode. Empty for
+    /// long-frame data bursts, whose codewords arrive in `soft`.
+    pub frames: Vec<Option<Vec<u8>>>,
+    /// Long-frame data bursts: the soft bits, for the station to lay out,
+    /// combine with what it has stored, and decode.
+    pub soft: Option<Soft>,
+    /// Mean SNR, dB in 2.4 kHz.
+    pub snr_db: f32,
+    /// The channel the receiver measured over the burst (delay and
+    /// Doppler spread, effective SNR; see [`crate::chan`]).
+    pub chan: ChannelMeas,
+    /// The receiving side's pick of the third of the passband for slice
+    /// bursts (`crate::slots`; 0 the centre), as of this burst.
+    pub slot: u8,
+}
+
+/// For the PHY header: `code`'s [`air_code`] in bits 0–3, `session`
+/// 4–11, `hi` 12–15 (a data burst's number in 12–13 and HARQ check bits in
+/// 14–15; a tiny message's kind).
+pub fn user_bits(code: usize, session: u8, hi: u8) -> u16 {
+    air_code(code) | (session as u16) << 4 | (hi as u16 & 0xF) << 12
+}
+
+/// Ladder levels in MFSK (they come first).
+fn mfsk_levels() -> usize {
+    LADDER.iter().take_while(|l| matches!(l.wave, Wave::Mfsk(_))).count()
+}
+
+/// The 4-bit code burst `code` goes out with. The receiver knows which
+/// waveform it heard, so levels are numbered per waveform: the MFSK levels
+/// from 0, the OFDM levels from 2 (OFDM codes 0 and 1 keep meaning short
+/// frames, as MFSK R0's and R1's: net control bursts are code 0 in any
+/// waveform); [`TINY`] 14, [`CONTROL`] 15.
+pub fn air_code(code: usize) -> u16 {
+    match code {
+        TINY => 14,
+        CONTROL => 15,
+        l if l < mfsk_levels() => l as u16,
+        l => (l - mfsk_levels() + 2) as u16,
+    }
+}
+
+/// Burst code of a burst heard in `wave` with PHY header `user` (the
+/// inverse of [`air_code`]).
+pub fn user_code(wave: Wave, user: u16) -> usize {
+    match (user & 0xF) as usize {
+        14 => TINY,
+        15 => CONTROL,
+        c => match wave {
+            Wave::Ofdm(_) if c >= 2 => c + mfsk_levels() - 2,
+            _ => c,
+        },
+    }
+}
+
+pub fn user_session(user: u16) -> u8 {
+    (user >> 4) as u8
+}
+
+pub fn user_hi(user: u16) -> u8 {
+    (user >> 12) as u8 & 0xF
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Stats {
+    /// Payload bytes the peer has acknowledged.
+    pub bytes_acked: u64,
+    /// Payload bytes delivered to us, in order (stream bytes: compressed
+    /// records when the link compresses).
+    pub bytes_received: u64,
+    /// Bytes given to [`Station::send`], and bytes handed out by
+    /// [`Station::take_received`]'s queue: the application's data, before
+    /// compression and after it is undone.
+    pub text_sent: u64,
+    pub text_received: u64,
+    /// Compressed records that failed to decode (delivered as they were).
+    pub codec_errors: u32,
+    pub data_bursts: u32,
+    pub control_bursts: u32,
+    /// Whole frames sent, and how many of them were resends.
+    pub frames_sent: u32,
+    pub frames_resent: u32,
+    /// HARQ increments sent, and their coded bits.
+    pub increments_sent: u32,
+    pub increment_bits: u64,
+    /// Receiving side: codewords that failed (after combining), and
+    /// codewords decoded only thanks to combining.
+    pub codewords_failed: u32,
+    pub harq_recovered: u32,
+    pub polls: u32,
+    /// Seconds we were on the air.
+    pub airtime_s: f64,
+    /// Level of each data burst we sent, in order.
+    pub levels: Vec<usize>,
+    /// Data bursts of which nothing got through (the ACK said so, or the
+    /// peer never heard the burst), and how many of them were OFDM.
+    pub failed_bursts: u32,
+    pub failed_ofdm: u32,
+    /// Sending side: per data burst, the peer's channel class in force
+    /// and the target level (`super::report`).
+    pub classes: Vec<(ChanClass, usize)>,
+    /// Receiving side: per data burst heard, its level, the burst's
+    /// measurement (delay ms, Doppler Hz, effective and mean SNR dB) and
+    /// the class we report back.
+    pub heard: Vec<(usize, [f32; 4], ChanClass)>,
+}
+
+/// One slot of a data burst sent.
+#[derive(Clone, Copy, Debug)]
+struct Sent {
+    off: u32,
+    /// Coded bits on the air.
+    bits: usize,
+    /// Bits of this codeword the peer holds once this slot arrives.
+    held: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Awaiting {
+    Nothing,
+    ConnAck,
+    Ack,
+    /// We sent Turn: waiting for the peer's first burst.
+    TurnTaken,
+    DiscAck,
+}
+
+pub struct Station {
+    cfg: Config,
+    air: Arc<dyn Air>,
+    state: State,
+    role: Role,
+    peer: String,
+    session: u8,
+    /// Earliest time we may key (the channel was busy until just before).
+    tx_at: f64,
+    awaiting: Awaiting,
+    /// When to give up waiting for `awaiting`; set once our burst ends.
+    deadline: Option<f64>,
+    /// The wait that set `deadline`, and the latest [`Station::peer_busy`]
+    /// may push it to.
+    reply_wait: f64,
+    deadline_cap: f64,
+    /// Burst to resend when the deadline passes (call, turn, goodbye).
+    retry: Option<Outgoing>,
+    tries: u32,
+    /// Answer to send at the next opportunity.
+    reply: Option<Outgoing>,
+    /// The burst just handed out was the last one (DiscAck): close after it.
+    close_after_tx: bool,
+    last_heard: f64,
+    last_tx_end: f64,
+    last_tx_wave: Wave,
+    // Sending side.
+    out: VecDeque<u8>,
+    /// Stream offset of `out[0]`.
+    next_offset: u32,
+    /// Sent, not yet acknowledged: offset → bytes.
+    inflight: BTreeMap<u32, Vec<u8>>,
+    level: usize,
+    /// Highest level the peer's SNR report allows.
+    target: usize,
+    /// Whole bursts lost at each level since it last got one through.
+    fails: [u8; LADDER.len()],
+    /// Each level's recent share of fresh frames delivered (EWMA, newest
+    /// weighted [`SUCCESS_WEIGHT`]); `None` until it has been tried.
+    success: [Option<f32>; LADDER.len()],
+    /// The last ACKs' SNR reports, newest last (for `smooth_target`).
+    snr_reports: VecDeque<f32>,
+    /// Each level is not used before this time, nor are faster ones: all
+    /// of them, or (`hold_all` false) only those whose guard is no longer
+    /// than its own (see [`Station::usable`]).
+    blocked_until: [f64; LADDER.len()],
+    hold_all: [bool; LADDER.len()],
+    burst_id: u8,
+    /// Longest next data burst before [`Station::clean_burst_s`] caps it
+    /// (`Config::burst_adapt`).
+    burst_s: f64,
+    /// The peer's SNR report before the last one (`burst_steady_db`).
+    last_report_db: Option<f32>,
+    /// Receiving side: data bursts left before `cheap_ack_margin_db` may
+    /// be used again (a poll showed a cheap ACK lost).
+    cheap_ack_off: u8,
+    /// Each slot of the last data burst, in order.
+    last_burst: Vec<Sent>,
+    /// What the peer has stored for HARQ, in its order: (offset, bits it
+    /// holds). Changes only on an ACK for the burst just sent.
+    at_peer: Vec<(u32, usize)>,
+    /// The waveform all of `at_peer` was sent in.
+    peer_wave: Wave,
+    peer_wants_turn: bool,
+    peer_wants_disc: bool,
+    want_disc: bool,
+    /// The peer's last channel class (sending side), or our own (the
+    /// channel is the same both ways) after taking the turn.
+    peer_class: ChanClass,
+    /// The third the peer wants our slice bursts in, and the one our
+    /// receivers want ours in (`crate::slots`).
+    peer_slot: u8,
+    rx_slot: u8,
+    // Receiving side.
+    /// What we measure of the channel over the link (for the report).
+    chan: ChanTrack,
+    /// Effective SNR of the last burst heard.
+    last_rx_eff: f32,
+    delivered: u32,
+    rx_pending: BTreeMap<u32, Vec<u8>>,
+    inbox: Vec<u8>,
+    last_rx_snr: f32,
+    /// What we would ACK: (burst, bitmap, frames in that burst, failures
+    /// stored).
+    last_ack: (u8, u64, usize, bool),
+    harq: HarqRx,
+    /// Level of the peer's last data burst (where to start if we get the turn).
+    rx_level: usize,
+    stats: Stats,
+    sessions: u8,
+    // Compression (`cfg.compress`).
+    /// Whether this link's compression has been settled (connected).
+    agreed: bool,
+    /// Data given to `send` before that, kept whole until we know.
+    unsent: Vec<Vec<u8>>,
+    tx_codec: Option<StreamEncoder>,
+    rx_codec: Option<StreamDecoder>,
+}
+
+impl Station {
+    pub fn new(cfg: Config, air: Arc<dyn Air>) -> Self {
+        let burst_s = cfg.max_burst_s;
+        let seed = cfg.call.bytes().fold(0u8, |a, b| a.wrapping_mul(31).wrapping_add(b));
+        Self {
+            cfg,
+            air,
+            state: State::Idle,
+            role: Role::Receiver,
+            peer: String::new(),
+            session: 0,
+            tx_at: 0.0,
+            awaiting: Awaiting::Nothing,
+            deadline: None,
+            reply_wait: 0.0,
+            deadline_cap: 0.0,
+            retry: None,
+            tries: 0,
+            reply: None,
+            close_after_tx: false,
+            last_heard: 0.0,
+            last_tx_end: 0.0,
+            last_tx_wave: FLOOR_WAVE,
+            out: VecDeque::new(),
+            next_offset: 0,
+            inflight: BTreeMap::new(),
+            level: FLOOR,
+            target: FLOOR,
+            fails: [0; LADDER.len()],
+            success: [None; LADDER.len()],
+            snr_reports: VecDeque::new(),
+            blocked_until: [f64::NEG_INFINITY; LADDER.len()],
+            hold_all: [true; LADDER.len()],
+            burst_id: 0,
+            burst_s,
+            last_report_db: None,
+            cheap_ack_off: 0,
+            last_burst: Vec::new(),
+            at_peer: Vec::new(),
+            peer_wave: FLOOR_WAVE,
+            peer_wants_turn: false,
+            peer_wants_disc: false,
+            want_disc: false,
+            peer_class: ChanClass::default(),
+            peer_slot: 0,
+            rx_slot: 0,
+            chan: ChanTrack::default(),
+            last_rx_eff: 0.0,
+            delivered: 0,
+            rx_pending: BTreeMap::new(),
+            inbox: Vec::new(),
+            last_rx_snr: 0.0,
+            last_ack: (0, 0, 0, false),
+            harq: HarqRx::new(),
+            rx_level: FLOOR,
+            stats: Stats::default(),
+            sessions: seed,
+            agreed: false,
+            unsent: Vec::new(),
+            tx_codec: None,
+            rx_codec: None,
+        }
+    }
+
+    /// Whether this link compresses (both ends agreed at connect).
+    pub fn compressing(&self) -> bool {
+        self.tx_codec.is_some()
+    }
+
+    // -- application side -----------------------------------------------------
+
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    pub fn peer(&self) -> &str {
+        &self.peer
+    }
+
+    pub fn call(&self) -> &str {
+        &self.cfg.call
+    }
+
+    /// Current data level (meaningful on the sending side).
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
+    /// The level the peer's last SNR report allows.
+    pub fn target_level(&self) -> usize {
+        self.target
+    }
+
+    /// The third of the passband our slice bursts go in (the peer's pick,
+    /// 0 the centre, or 0 with `slice_slots` off), and the one our
+    /// receivers asked for in our last ACK (`crate::slots`).
+    pub fn slots(&self) -> (u8, u8) {
+        (if self.cfg.slice_slots { self.peer_slot } else { 0 }, self.rx_slot)
+    }
+
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+
+    /// Wait for a call.
+    pub fn listen(&mut self) {
+        self.reset_link();
+        self.state = State::Listening;
+    }
+
+    /// Call `peer`. The call goes out in the floor waveform.
+    pub fn connect(&mut self, peer: &str, now: f64) {
+        self.reset_link();
+        self.peer = peer.to_ascii_uppercase();
+        self.sessions = self.sessions.wrapping_add(97);
+        self.session = self.sessions;
+        self.state = State::Connecting;
+        self.role = Role::Sender;
+        self.tx_at = now;
+        let mut f = Frame::new(Kind::ConnReq, self.session as u32);
+        let mut text = format!("{} {} {}", self.cfg.call, self.peer, self.cfg.max_level);
+        text.truncate(Frame::max_payload(CONTROL_BYTES));
+        f.payload = text.into_bytes();
+        if self.cfg.compress {
+            f.flags |= flags::COMPRESS;
+        }
+        // Armed as an expired wait: the next poll sends it as the first try.
+        self.retry = Some(self.control(f, FLOOR_WAVE));
+        self.awaiting = Awaiting::ConnAck;
+        self.tries = 0;
+        self.deadline = Some(now);
+    }
+
+    /// Queue bytes for the peer. With [`Config::compress`] on, each call
+    /// is compressed on its own terms (records of up to
+    /// [`super::compress::CHUNK`] bytes); before the link has agreed
+    /// whether to compress, the data waits whole.
+    pub fn send(&mut self, data: &[u8]) {
+        self.stats.text_sent += data.len() as u64;
+        if self.cfg.compress && !self.agreed {
+            self.unsent.push(data.to_vec());
+        } else {
+            self.queue(data);
+        }
+    }
+
+    fn queue(&mut self, data: &[u8]) {
+        match &mut self.tx_codec {
+            Some(c) => {
+                let mut wire = Vec::new();
+                c.push(data, &mut wire);
+                self.out.extend(wire);
+            }
+            None => self.out.extend(data),
+        }
+    }
+
+    /// Settles compression for this link (`on`: both ends have it) and
+    /// queues what was waiting.
+    fn agree(&mut self, on: bool) {
+        self.agreed = true;
+        self.tx_codec = on.then(StreamEncoder::new);
+        self.rx_codec = on.then(StreamDecoder::new);
+        for d in std::mem::take(&mut self.unsent) {
+            self.queue(&d);
+        }
+    }
+
+    /// Bytes received so far, in order (taken).
+    pub fn take_received(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.inbox)
+    }
+
+    /// Bytes queued or in flight (stream bytes, plus data still waiting
+    /// for the link to agree on compression).
+    pub fn pending(&self) -> usize {
+        self.out.len()
+            + self.inflight.values().map(Vec::len).sum::<usize>()
+            + self.unsent.iter().map(Vec::len).sum::<usize>()
+    }
+
+    /// Close the link once everything queued has been delivered.
+    pub fn disconnect(&mut self) {
+        self.want_disc = true;
+    }
+
+    // -- radio side -------------------------------------------------------------
+
+    /// What to transmit now, if anything. The caller must not call it while
+    /// the other side is on the air (carrier sense).
+    pub fn poll_tx(&mut self, now: f64) -> Option<Outgoing> {
+        if now < self.tx_at {
+            return None;
+        }
+        if matches!(
+            self.state,
+            State::Idle | State::Listening | State::Disconnected | State::Failed
+        ) {
+            return None;
+        }
+        if let Some(r) = self.reply.take() {
+            return Some(self.note_tx(r));
+        }
+        if self.awaiting != Awaiting::Nothing {
+            let deadline = self.deadline?;
+            if now < deadline {
+                return None;
+            }
+            self.tries += 1;
+            // Once connected, ride out fades: give up only after a long
+            // silence. The call and the goodbye get a fixed number of tries.
+            let give_up = match self.awaiting {
+                Awaiting::Ack | Awaiting::TurnTaken => now - self.last_heard > self.cfg.link_timeout_s,
+                _ => self.tries > self.cfg.retries,
+            };
+            if give_up {
+                self.state = match self.awaiting {
+                    Awaiting::DiscAck => State::Disconnected,
+                    _ => State::Failed,
+                };
+                self.awaiting = Awaiting::Nothing;
+                return None;
+            }
+            self.deadline = None;
+            let b = match self.awaiting {
+                // A lost ACK: ask for it again rather than resending data;
+                // after the first try, in the floor waveform.
+                Awaiting::Ack => {
+                    self.stats.polls += 1;
+                    let wave = if self.tries <= 1 { self.cur_wave() } else { FLOOR_WAVE };
+                    self.tiny(Tiny::Poll, wave)
+                }
+                _ => self.retry.clone()?,
+            };
+            return Some(self.note_tx(b));
+        }
+        if self.role == Role::Receiver {
+            if self.state == State::Connected && now - self.last_heard > self.cfg.link_timeout_s {
+                self.state = State::Failed;
+            }
+            return None;
+        }
+        if self.state != State::Connected {
+            return None;
+        }
+        let wave = self.cur_wave();
+        let nothing_left = self.out.is_empty() && self.inflight.is_empty();
+        if nothing_left && (self.want_disc || self.peer_wants_disc) {
+            self.state = State::Disconnecting;
+            let b = self.tiny(Tiny::DiscReq, wave);
+            return Some(self.send_awaiting(b, Awaiting::DiscAck));
+        }
+        if nothing_left && self.peer_wants_turn {
+            let b = self.tiny(Tiny::Turn, wave);
+            return Some(self.send_awaiting(b, Awaiting::TurnTaken));
+        }
+        if nothing_left {
+            if now - self.last_tx_end < self.cfg.idle_s {
+                return None;
+            }
+            let b = self.tiny(Tiny::Idle, wave);
+            return Some(self.send_awaiting(b, Awaiting::Ack));
+        }
+        let b = self.data_burst();
+        Some(self.note_tx(b))
+    }
+
+    /// Our burst finished at `t` (the last sample left).
+    pub fn on_tx_done(&mut self, t: f64) {
+        self.last_tx_end = t;
+        if self.close_after_tx {
+            self.close_after_tx = false;
+            self.state = State::Disconnected;
+            return;
+        }
+        if self.awaiting != Awaiting::Nothing {
+            // The answer comes back in the waveform we just used.
+            let wave = self.last_tx_wave;
+            let answer = self
+                .air
+                .duration(wave, TINY, 0)
+                .max(self.air.duration(wave, CONTROL, frame_bits(CONTROL, 1)));
+            let mut reply = self.cfg.turnaround_s + answer;
+            if self.awaiting == Awaiting::TurnTaken {
+                // The peer answers a Turn with a data burst (its first is
+                // never longer than `max_burst_s`, see `burst_adapt`).
+                reply += self.cfg.max_burst_s;
+            }
+            // Back off while nothing comes back (a fade, or a deaf peer).
+            let backoff = 1.0 + self.tries.min(4) as f64;
+            self.reply_wait = reply + self.cfg.reply_slack_s * backoff;
+            self.deadline = Some(t + self.reply_wait);
+            self.deadline_cap = t + self.reply_wait + PEER_BUSY_MAX_S;
+        }
+    }
+
+    /// The peer is on the air with something we cannot decode (its CW ID
+    /// ahead of its answer): wait for the answer from now, up to
+    /// [`PEER_BUSY_MAX_S`] longer than usual.
+    pub fn peer_busy(&mut self, now: f64) {
+        if self.awaiting != Awaiting::Nothing
+            && let Some(d) = self.deadline
+        {
+            self.deadline = Some(d.max(now + self.reply_wait).min(self.deadline_cap));
+        }
+    }
+
+    /// A burst arrived, ending at `now`.
+    pub fn on_rx(&mut self, inc: &Incoming, now: f64) {
+        self.tx_at = now + self.cfg.turnaround_s;
+        let frames: Vec<Option<Frame>> = inc
+            .frames
+            .iter()
+            .map(|f| f.as_deref().and_then(Frame::decode))
+            .collect();
+        let tiny = (inc.code == TINY)
+            .then(|| Tiny::decode(user_hi(inc.user), inc.extra))
+            .flatten();
+
+        if self.state == State::Listening {
+            self.listening_rx(inc, &frames, now);
+            return;
+        }
+        if user_session(inc.user) != self.session {
+            return;
+        }
+        self.last_heard = now;
+
+        // The peer answered our Turn: it is the sender now.
+        if self.awaiting == Awaiting::TurnTaken && (inc.code < LADDER.len() || matches!(tiny, Some(Tiny::Idle))) {
+            self.role = Role::Receiver;
+            self.clear_wait();
+            self.at_peer.clear();
+            self.harq.clear();
+        }
+
+        match self.role {
+            Role::Sender => self.sender_rx(inc, tiny, &frames, now),
+            Role::Receiver => self.receiver_rx(inc, tiny, &frames, now),
+        }
+    }
+
+    fn listening_rx(&mut self, inc: &Incoming, frames: &[Option<Frame>], now: f64) {
+        for f in frames.iter().flatten() {
+            if f.kind != Kind::ConnReq {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&f.payload).to_string();
+            let mut words = text.split_whitespace();
+            let (Some(from), Some(to)) = (words.next(), words.next()) else {
+                continue;
+            };
+            if !to.eq_ignore_ascii_case(&self.cfg.call) {
+                continue;
+            }
+            self.peer = from.to_ascii_uppercase();
+            self.session = user_session(inc.user);
+            self.state = State::Connected;
+            self.role = Role::Receiver;
+            self.last_heard = now;
+            self.reset_data();
+            self.agree(self.cfg.compress && f.flags & flags::COMPRESS != 0);
+            self.note_rx_channel(inc);
+            self.reply = Some(self.conn_ack(inc));
+            return;
+        }
+    }
+
+    fn cur_wave(&self) -> Wave {
+        LADDER[self.level].wave
+    }
+
+    // -- helpers --------------------------------------------------------------
+
+    fn tiny(&self, t: Tiny, wave: Wave) -> Outgoing {
+        let (kind, extra) = t.encode();
+        Outgoing {
+            wave,
+            code: TINY,
+            user: user_bits(TINY, self.session, kind),
+            extra,
+            frames: Vec::new(),
+            spans: Vec::new(),
+        }
+    }
+
+    fn control(&self, f: Frame, wave: Wave) -> Outgoing {
+        Outgoing {
+            wave,
+            code: CONTROL,
+            user: user_bits(CONTROL, self.session, 0),
+            extra: 0,
+            frames: vec![f.encode(CONTROL_BYTES)],
+            spans: Vec::new(),
+        }
+    }
+
+    fn send_awaiting(&mut self, b: Outgoing, what: Awaiting) -> Outgoing {
+        self.awaiting = what;
+        self.tries = 0;
+        self.deadline = None;
+        self.retry = Some(b.clone());
+        self.note_tx(b)
+    }
+
+    fn note_tx(&mut self, b: Outgoing) -> Outgoing {
+        if b.code >= LADDER.len() {
+            self.stats.control_bursts += 1;
+        }
+        self.stats.airtime_s += self.air.duration(b.wave, b.code, b.coded_bits());
+        self.last_tx_wave = b.wave;
+        b
+    }
+
+    fn clear_wait(&mut self) {
+        self.awaiting = Awaiting::Nothing;
+        self.deadline = None;
+        self.retry = None;
+        self.tries = 0;
+    }
+
+    fn reset_data(&mut self) {
+        self.inflight.clear();
+        self.next_offset = 0;
+        self.delivered = 0;
+        self.rx_pending.clear();
+        self.last_burst.clear();
+        self.at_peer.clear();
+        self.harq.clear();
+        self.last_ack = (0, 0, 0, false);
+        self.peer_wants_turn = false;
+        self.peer_wants_disc = false;
+        self.want_disc = false;
+        self.level = FLOOR;
+        self.target = FLOOR;
+        self.fails = [0; LADDER.len()];
+        self.blocked_until = [f64::NEG_INFINITY; LADDER.len()];
+        self.hold_all = [true; LADDER.len()];
+        self.rx_level = FLOOR;
+        self.burst_id = 0;
+        // Compression is agreed afresh on each connection; data queued
+        // for it (`unsent`), like `out`, stays.
+        self.agreed = false;
+        self.tx_codec = None;
+        self.rx_codec = None;
+        self.peer_class = ChanClass::default();
+        self.chan.clear();
+        self.burst_s = self.cfg.max_burst_s;
+        self.last_report_db = None;
+        self.cheap_ack_off = 0;
+    }
+
+    fn reset_link(&mut self) {
+        self.reset_data();
+        self.clear_wait();
+        self.reply = None;
+        self.close_after_tx = false;
+        self.peer.clear();
+    }
+}

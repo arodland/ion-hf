@@ -1,0 +1,36 @@
+Ion HF (alpha)
+==============
+
+An HF data modem for amateur radio: keyboard chat, files and pictures,
+nets, and a VARA-style port for Winlink clients (Pat, Winlink Express).
+
+Run
+---
+Windows: ionhf.exe. Unsigned for now: at the SmartScreen warning choose
+"More info", then "Run anyway".
+
+macOS: open "Ion HF.dmg" and drag Ion HF to Applications. Unsigned for
+now: the first time, right-click Ion HF and choose Open (or, in
+Terminal: xattr -d com.apple.quarantine "/Applications/Ion HF.app").
+Allow the microphone when asked: that is how Ion hears your radio.
+
+Try it with no radio: ionhf --loopback (a simulated station, LOOP,
+answers calls).
+
+Settings
+--------
+ionhf.toml, with window.ron (the window) and ion.log (the log, Windows):
+  Windows  %APPDATA%\Ion HF
+  macOS    ~/Library/Application Support/Ion HF
+  Linux    ~/.config/ionhf
+Portable: put an ionhf.toml (even an empty one) next to the program and
+Ion keeps everything in that folder instead.
+
+Received files and pictures go to Documents/Ion.
+
+On the air
+----------
+Ion sends a CW ID at the end of every link and every 9.5 minutes during
+one. Abort stops it transmitting at any time.
+
+GPL-3.0-or-later. N0JLF.
