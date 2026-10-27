@@ -18,6 +18,8 @@ use crate::engine::{Msg, SAMPLE_RATE, UiEvent};
 const ID_EVERY_S: f64 = 570.0;
 /// From the end of the closing station's CW ID to the start of ours.
 const ID_GAP_S: f64 = 1.5;
+/// How long a host program's DISCONNECT waits for what is queued to go.
+pub const HOST_DRAIN_S: f64 = 30.0;
 
 /// From the DSP thread.
 #[derive(Debug)]
@@ -37,6 +39,9 @@ pub enum IonCmd {
     Send(Vec<u8>),
     /// Close the link politely (this keys the radio for the goodbye).
     Disconnect,
+    /// Close it once what is queued has been acknowledged, within
+    /// [`HOST_DRAIN_S`] (a host program's DISCONNECT).
+    DisconnectWhenSent,
     /// Drop everything locally, without transmitting.
     Stop,
     /// Run a net with this name, as net control.
@@ -328,6 +333,10 @@ impl Worker {
             IonCmd::Disconnect => {
                 self.closing = true;
                 self.node.station_mut().disconnect();
+            }
+            IonCmd::DisconnectWhenSent => {
+                self.closing = true;
+                self.node.station_mut().disconnect_when_sent(now, HOST_DRAIN_S);
             }
             IonCmd::Stop => {
                 // Stop cuts a CW ID that is playing, too.

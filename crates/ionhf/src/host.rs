@@ -260,7 +260,7 @@ impl Host {
             ["DISCONNECT"] => {
                 self.say("OK");
                 if self.connected.is_some() {
-                    let _ = self.ion.send(IonCmd::Disconnect);
+                    let _ = self.ion.send(IonCmd::DisconnectWhenSent);
                 } else {
                     // Nothing up (or still calling): give up now.
                     let _ = self.ion.send(IonCmd::Stop);

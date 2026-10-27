@@ -300,6 +300,53 @@ fn the_receiver_can_end_it_mid_transfer() {
     assert!(ok, "{}", states(&sim));
 }
 
+/// A host program's DISCONNECT (Ragtime's Leave): its farewell, written
+/// just before, still reaches the far end.
+#[test]
+fn a_host_disconnect_sends_what_is_queued_first() {
+    let mut sim = pair(15.0, [0.0; 2], 21, |_, _, _| false);
+    settle(&mut sim, 2_000);
+    let t0 = sim.t;
+    sim.stations[0].send(&payload(200, 9));
+    sim.stations[0].disconnect_when_sent(t0, 30.0);
+    let ok = sim.run_until(t0 + 30.0, |s| {
+        s.stations.iter().all(|st| st.state() == State::Disconnected)
+    });
+    assert!(ok, "{}", states(&sim));
+    assert_eq!(sim.stations[1].stats().bytes_received, 2_200);
+}
+
+/// The same from the receiving side: its farewell takes the turn before
+/// the sender says goodbye.
+#[test]
+fn a_receiver_leaving_gets_its_farewell_through() {
+    let mut sim = pair(15.0, [0.0; 2], 22, |_, _, _| false);
+    settle(&mut sim, 2_000);
+    let t0 = sim.t;
+    sim.stations[1].send(&payload(100, 9));
+    sim.stations[1].disconnect_when_sent(t0, 30.0);
+    let ok = sim.run_until(t0 + 40.0, |s| {
+        s.stations.iter().all(|st| st.state() == State::Disconnected)
+    });
+    assert!(ok, "{}", states(&sim));
+    assert_eq!(sim.stations[0].stats().bytes_received, 100);
+}
+
+#[test]
+fn a_host_disconnect_drops_the_rest_after_its_limit() {
+    let mut sim = pair(15.0, [0.0; 2], 23, |_, _, _| false);
+    sim.stations[0].connect("W1AW", 0.0);
+    sim.stations[0].send(&payload(60_000, 1));
+    assert!(sim.run_until(600.0, |s| s.stations[1].stats().bytes_received >= 5_000));
+    let t0 = sim.t;
+    sim.stations[0].disconnect_when_sent(t0, 10.0);
+    let ok = sim.run_until(t0 + 40.0, |s| {
+        s.stations.iter().all(|st| st.state() == State::Disconnected)
+    });
+    assert!(ok, "{}", states(&sim));
+    assert!(sim.stations[1].stats().bytes_received < 60_000);
+}
+
 #[test]
 fn disconnect_closes_even_when_the_peer_cannot_answer() {
     // B hears A, A hears nothing of B: the goodbye goes unanswered, and A

@@ -72,6 +72,9 @@ this framing.
 `VERSION IonHF <version>`. Settings that mean nothing to Ion (`BW…`,
 `COMPRESSION …`, `CWID …`) are answered `OK`. `BUFFER n` counts bytes the
 far end has not yet acknowledged (Pat waits for 0 before closing).
+`DISCONNECT` closes the link once what is queued has been acknowledged
+(a client's farewell still goes), giving up on the rest after 30 s;
+`ABORT` closes at once.
 `PTT ON/OFF` is for information only: Ion keys the radio itself. `SN`
 gives the S/N of the last burst heard. A KISS port 200 below the command
 port accepts a connection and discards what it is sent, for clients that
@@ -115,6 +118,24 @@ channel, with no radio:
   hears W5HID, so W5HID's traffic arrives relayed.
 - **Net, Join:** `LOOPNC` runs net `LOOPNET` with two members and a
   bulletin.
+
+## Simulated band
+
+`ionhf --sim` runs headless Ion stations, no window and no radio, for
+testing host programs such as Ragtime or Pat against Ion. Each station has
+its own host ports: station 0 on 8300 (KISS 8100), station 1 on 8310 (KISS
+8110), and so on. What one transmits reaches each of the others through
+its own IONOS channel (`ion_dsp::ionos`), in real time.
+
+```
+ionhf --sim [--stations 2] [--ionos WGN|MPG|MPM|MPP|MPD] [--paths 2]
+      [--snr 10[,DB...]] [--port 8300] [--calls N0AAA,N0BBB] [--seed 1]
+```
+
+`--snr` is what each station hears, in station order (the last value
+repeats), against a sine at full transmit level in 3 kHz, as in the IONOS
+charts; `--snr 15,0` makes a lopsided link. The log goes where Ion's log
+goes, so run it from a folder with its own `ionhf.toml` (portable).
 
 ## Not in this version
 

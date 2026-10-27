@@ -381,6 +381,8 @@ pub struct Station {
     turn_asked_at: f64,
     peer_wants_disc: bool,
     want_disc: bool,
+    /// [`Station::disconnect_when_sent`]: when what is left is dropped.
+    disc_by: Option<f64>,
     /// Receiving side: when we may next ask for the turn unasked.
     next_speak_up: f64,
     /// Stream bytes queued so far, and per `send` its end in the stream and
@@ -472,6 +474,7 @@ impl Station {
             turn_asked_at: 0.0,
             peer_wants_disc: false,
             want_disc: false,
+            disc_by: None,
             next_speak_up: 0.0,
             stream_total: 0,
             sends: VecDeque::new(),
@@ -663,6 +666,7 @@ impl Station {
     /// link closes anyway.
     pub fn disconnect(&mut self) {
         self.want_disc = true;
+        self.disc_by = None;
         match self.state {
             State::Connecting => {
                 self.clear_wait();
@@ -690,6 +694,17 @@ impl Station {
         }
     }
 
+    /// End the link once what is queued has been acknowledged (a host
+    /// program's DISCONNECT); after `within_s` as [`Station::disconnect`].
+    pub fn disconnect_when_sent(&mut self, now: f64, within_s: f64) {
+        if self.state == State::Connected && self.pending() > 0 {
+            self.want_disc = true;
+            self.disc_by = Some(now + within_s);
+        } else {
+            self.disconnect();
+        }
+    }
+
     // -- radio side -------------------------------------------------------------
 
     /// What to transmit now, if anything. The caller must not call it while
@@ -703,6 +718,9 @@ impl Station {
             State::Idle | State::Listening | State::Disconnected | State::Failed
         ) {
             return None;
+        }
+        if self.disc_by.is_some_and(|t| now >= t) {
+            self.disconnect();
         }
         if let Some(r) = self.reply.take() {
             if self.answering && r.code == TINY && user_hi(r.user) == Tiny::CONN_ACK_KIND {
@@ -782,7 +800,8 @@ impl Station {
         }
         let wave = self.cur_wave();
         let nothing_left = self.out.is_empty() && self.inflight.is_empty();
-        if nothing_left && (self.want_disc || self.peer_wants_disc) {
+        // A peer leaving with data still to send gets the turn first.
+        if nothing_left && (self.want_disc || self.peer_wants_disc && !self.peer_wants_turn) {
             self.state = State::Disconnecting;
             let b = self.tiny(Tiny::DiscReq, wave);
             return Some(self.send_awaiting(b, Awaiting::DiscAck));
@@ -1040,6 +1059,7 @@ impl Station {
         self.peer_wants_turn = false;
         self.peer_wants_disc = false;
         self.want_disc = false;
+        self.disc_by = None;
         self.level = FLOOR;
         self.target = FLOOR;
         self.fails = [0; LADDER.len()];

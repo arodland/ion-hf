@@ -4,6 +4,7 @@
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
 //! [--send TEXT] [--file PATH] [--net NAME] [--tab link|listen|net|setup]
 //! [--view chat|charts|log] [--mini] [--shots DIR] [--quit S] [--loop-snr DB]
+//! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
@@ -21,6 +22,7 @@ mod pipeline_tests;
 mod radio;
 mod resample;
 mod rig;
+mod sim;
 mod soundcard;
 mod theme;
 mod views;
@@ -119,6 +121,11 @@ fn init_logging() {
 fn main() -> eframe::Result {
     init_logging();
     log::info!("ion {} starting", env!("CARGO_PKG_VERSION"));
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--sim") {
+        sim::run(&argv);
+        return Ok(());
+    }
     let args = parse_args();
     let mut cfg = Config::load();
     let _ = std::fs::create_dir_all(Config::dir());
