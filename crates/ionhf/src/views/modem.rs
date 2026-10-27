@@ -21,14 +21,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let s = app.link.clone();
     ui.columns(4, |c| {
         figure(&mut c[0], "S/N", format!("{} dB", theme::db(app.hist.last_here)));
-        let level = s.as_ref().filter(|_| app.linked()).map_or("—".into(), |s| {
+        let level = s.as_ref().filter(|_| app.linked()).and_then(|s| {
             if s.role == ion::link::Role::Sender {
-                theme::level_short(s.level)
+                Some(s.level)
             } else {
-                app.hist.peer_level.map_or("—".into(), theme::level_short)
+                app.hist.peer_level
             }
         });
-        figure(&mut c[1], "Level", level);
+        let caption = match level.and_then(theme::level_guard) {
+            Some(g) => format!("Level · {g}"),
+            None => "Level".into(),
+        };
+        figure(&mut c[1], &caption, level.map_or("—".into(), theme::level_short));
         let rate = s.as_ref().filter(|s| s.connected_s > 5.0).map_or("—".into(), |s| {
             format!(
                 "{:.0} bit/s",
@@ -106,7 +110,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if let Some(s) = &s {
         theme::caption(ui, "Band");
-        theme::band_meter(ui, s.band, s.slot_rx);
+        theme::band_meter(ui, s.band, app.band_use());
     }
 
     let notes_h = NOTES as f32 * 17.0 + 8.0;

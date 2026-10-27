@@ -115,29 +115,43 @@ pub fn bar(ui: &mut egui::Ui, frac: f32, color: Color32, text: &str) {
     );
 }
 
-/// The slot meter (`ion::slots`): how clean each third of the passband
-/// is here (100 less its score), by frequency, the one our receivers pick
-/// in the accent colour.
-pub fn band_meter(ui: &mut egui::Ui, scores: [f32; 3], pick: u8) {
+/// What the link has on the air: the whole passband, one third of it
+/// (a slice level), or nothing yet, with the third our receivers would
+/// pick for a slice.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BandUse {
+    Full,
+    Third(u8),
+    Idle(u8),
+}
+
+/// The slot meter (`ion::slots`): how clean each third of the passband is
+/// here (100 less its score), by frequency. What the link uses is in the
+/// accent colour: one third for a slice, the three joined into one band
+/// for the full band.
+pub fn band_meter(ui: &mut egui::Ui, scores: [f32; 3], using: BandUse) {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 52.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
-    let col = w / 3.0;
-    for (i, (k, name)) in [(1usize, "Low"), (0, "Mid"), (2, "High")].into_iter().enumerate() {
-        let clean = ((100.0 - scores[k]) / 100.0).clamp(0.0, 1.0);
-        let x0 = rect.min.x + i as f32 * col + 3.0;
-        let x1 = x0 + col - 6.0;
-        let (top, bot) = (rect.min.y, rect.min.y + 32.0);
+    let full = using == BandUse::Full;
+    let (left, col) = (rect.min.x + 4.0, (w - 8.0) / 3.0);
+    let (top, bot) = (rect.min.y + 4.0, rect.min.y + 32.0);
+    let (gap, round) = if full { (0.0, 0.0) } else { (3.0, 3.0) };
+    for (i, (k, name)) in [(1u8, "Low"), (0, "Mid"), (2, "High")].into_iter().enumerate() {
+        let clean = ((100.0 - scores[k as usize]) / 100.0).clamp(0.0, 1.0);
+        let x0 = left + i as f32 * col + gap;
+        let x1 = left + (i + 1) as f32 * col - gap;
         p.rect_filled(
             egui::Rect::from_min_max(egui::pos2(x0, top), egui::pos2(x1, bot)),
-            3.0,
+            round,
             INSET,
         );
-        let on = k as u8 == pick;
+        let on = full || using == BandUse::Third(k);
+        let picked = using == BandUse::Idle(k);
         let y = bot - clean * (bot - top);
         p.rect_filled(
             egui::Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, bot)),
-            3.0,
+            round,
             if on { US } else { MUTED.gamma_multiply(0.5) },
         );
         p.text(
@@ -145,7 +159,15 @@ pub fn band_meter(ui: &mut egui::Ui, scores: [f32; 3], pick: u8) {
             egui::Align2::CENTER_TOP,
             format!("{name} {:.0}", clean * 100.0),
             egui::FontId::proportional(12.0),
-            if on { TEXT } else { MUTED },
+            if on || picked { TEXT } else { MUTED },
+        );
+    }
+    if full {
+        p.rect_stroke(
+            egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + 3.0 * col, bot)),
+            3.0,
+            Stroke::new(1.5, US),
+            egui::StrokeKind::Outside,
         );
     }
 }
@@ -163,9 +185,23 @@ pub fn level(l: usize) -> String {
     }
 }
 
-/// A level without "OFDM", which its modulation already implies.
+/// A level without "OFDM", which its modulation already implies, or its
+/// guard ([`level_guard`]).
 pub fn level_short(l: usize) -> String {
-    level(l).replacen(" OFDM", "", 1)
+    level(l)
+        .replacen(" OFDM", "", 1)
+        .replacen(" slice", "", 1)
+        .replacen(" long", "", 1)
+}
+
+/// "slice" or "long" for OFDM levels that are.
+pub fn level_guard(l: usize) -> Option<&'static str> {
+    use ion::level::{Guard, LADDER, Wave};
+    match LADDER.get(l)?.wave {
+        Wave::Ofdm(Guard::Slice) => Some("slice"),
+        Wave::Ofdm(Guard::Long) => Some("long"),
+        _ => None,
+    }
 }
 
 /// Bytes as "812 B" or "5.6 kB".

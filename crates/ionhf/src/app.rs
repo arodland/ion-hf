@@ -376,20 +376,42 @@ impl App {
         }
     }
 
-    /// The third of the passband the slice is in now, if the link is on a
-    /// slice level: ours as sender (the peer's pick), the peer's as
-    /// receiver (ours, which its next burst follows).
-    pub fn slice_band(&self) -> Option<(f32, f32, bool)> {
+    /// What the link has on the air: on a slice level, the third the
+    /// slice is in (ours as sender, the peer's pick; the peer's as
+    /// receiver, ours, which its next burst follows); else the whole band.
+    pub fn band_use(&self) -> theme::BandUse {
         use ion::level::{Guard, LADDER, Wave};
-        let s = self.link.as_ref().filter(|s| s.state == State::Connected)?;
+        let pick = self.link.as_ref().map_or(0, |s| s.slot_rx);
+        let Some(s) = self.link.as_ref().filter(|s| s.state == State::Connected) else {
+            return theme::BandUse::Idle(pick);
+        };
         let sending = s.role == ion::link::Role::Sender;
         let level = if sending { Some(s.level) } else { self.hist.peer_level };
-        if LADDER.get(level?)?.wave != Wave::Ofdm(Guard::Slice) {
-            return None;
+        let Some(l) = level.and_then(|l| LADDER.get(l)) else {
+            return theme::BandUse::Idle(pick);
+        };
+        if l.wave == Wave::Ofdm(Guard::Slice) {
+            theme::BandUse::Third(if sending { s.slot_tx } else { s.slot_rx }.min(2))
+        } else {
+            theme::BandUse::Full
         }
-        let slot = if sending { s.slot_tx } else { s.slot_rx } as usize;
-        let c = ion::link::audio::CENTER_HZ + ion::slots::OFFSETS_HZ[slot.min(2)];
-        Some((c - 325.0, c + 325.0, sending))
+    }
+
+    /// The passband the link is on (a slice's, or the whole band's), its
+    /// name, and whether we send it.
+    pub fn link_band(&self) -> Option<(f32, f32, &'static str, bool)> {
+        let sending = self.link.as_ref()?.role == ion::link::Role::Sender;
+        match self.band_use() {
+            theme::BandUse::Third(slot) => {
+                let c = ion::link::audio::CENTER_HZ + ion::slots::OFFSETS_HZ[slot as usize];
+                Some((c - 325.0, c + 325.0, "Slice", sending))
+            }
+            theme::BandUse::Full => {
+                let (lo, hi) = ion::link::audio::ofdm_band_hz();
+                Some((lo, hi, "Full", sending))
+            }
+            theme::BandUse::Idle(_) => None,
+        }
     }
 
     pub fn waterfall_panel(&mut self, ui: &mut egui::Ui, height: f32) {
@@ -401,12 +423,12 @@ impl App {
             keyed: self.status.keyed,
         };
         let bands: Vec<Band> = self
-            .slice_band()
-            .map(|(lo, hi, us)| Band {
+            .link_band()
+            .map(|(lo, hi, name, us)| Band {
                 lo_hz: lo,
                 hi_hz: hi,
                 color: if us { theme::US } else { theme::PEER },
-                label: "Slice".into(),
+                label: name.into(),
             })
             .into_iter()
             .collect();
