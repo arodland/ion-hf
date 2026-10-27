@@ -37,7 +37,11 @@ fn centered(ui: &mut egui::Ui, pairs: &[(&str, RichText)]) {
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let s = app.link.clone();
     ui.columns(4, |c| {
-        figure(&mut c[0], "S/N", format!("{} dB", theme::db(app.hist.last_here)));
+        figure(
+            &mut c[0],
+            "S/N",
+            app.hist.last_here.map_or("—".into(), |v| format!("{v:+.1} dB")),
+        );
         let level = s.as_ref().filter(|_| app.linked()).and_then(|s| {
             if s.role == ion::link::Role::Sender {
                 Some(s.level)

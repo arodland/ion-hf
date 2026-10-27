@@ -197,7 +197,6 @@ impl App {
             }
             Err(e) => {
                 self.note(format!("! host port {port}: {e}"));
-                self.cfg.host_enabled = false;
             }
         }
     }
@@ -316,6 +315,12 @@ impl App {
             ui.spacing_mut().item_spacing.x = 10.0;
             ui.label(RichText::new("ION HF").strong().size(15.0).color(theme::TEXT));
             ui.label(RichText::new(&self.cfg.call).monospace().color(theme::MUTED));
+            let arq = matches!(
+                self.state(),
+                State::Connecting | State::Connected | State::Disconnecting
+            );
+            let groups = self.link.as_ref().is_some_and(|s| !s.groups.is_empty());
+            theme::mode_pair(ui, arq, groups && !arq, groups && arq);
             let (color, text, detail) = self.state_pill();
             theme::pill(ui, color, &text, &detail);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -337,7 +342,11 @@ impl App {
     pub fn state_pill(&self) -> (egui::Color32, String, String) {
         let s = self.link.as_ref();
         let peer = s.map_or(String::new(), |s| s.peer.clone());
+        let groups = s.map_or(Vec::new(), |s| s.groups.clone());
         match self.state() {
+            State::Idle | State::Listening | State::Disconnected | State::Failed if !groups.is_empty() => {
+                (theme::NET, "Group".into(), groups.join(" "))
+            }
             State::Idle => (theme::MUTED, "Idle".into(), String::new()),
             State::Listening => (theme::US, "Listening".into(), String::new()),
             State::Connecting => (theme::WARN, "Calling".into(), peer),

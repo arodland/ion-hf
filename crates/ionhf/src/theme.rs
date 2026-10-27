@@ -106,6 +106,49 @@ pub fn pill(ui: &mut egui::Ui, color: Color32, text: &str, detail: &str) {
     }
 }
 
+/// Which way the modem is moving data: an ARQ link, or broadcast frames
+/// to a group (`waiting`: groups are open but a link holds the channel).
+pub fn mode_pair(ui: &mut egui::Ui, arq: bool, bcast: bool, waiting: bool) {
+    let p = ui.painter();
+    let cells = [("ARQ", arq, OK, false), ("BCAST", bcast, NET, waiting)];
+    let galleys: Vec<_> = cells
+        .iter()
+        .map(|(t, ..)| p.layout_no_wrap(t.to_string(), egui::FontId::monospace(11.0), TEXT))
+        .collect();
+    let w: f32 = galleys.iter().map(|g| g.size().x + 16.0).sum();
+    let (r, _) = ui.allocate_exact_size(Vec2::new(w, 22.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect(
+        r,
+        CornerRadius::same(4),
+        INSET,
+        Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
+    );
+    let mut x = r.min.x;
+    for ((_, on, color, waiting), g) in cells.into_iter().zip(galleys) {
+        let cell = egui::Rect::from_min_size(egui::pos2(x, r.min.y), Vec2::new(g.size().x + 16.0, r.height()));
+        if on {
+            p.rect(
+                cell.shrink(1.0),
+                CornerRadius::same(3),
+                color.gamma_multiply(0.25),
+                Stroke::new(1.0, color.gamma_multiply(0.7)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let ink = if on {
+            TEXT
+        } else if waiting {
+            color.gamma_multiply(0.7)
+        } else {
+            MUTED.gamma_multiply(0.6)
+        };
+        p.galley(egui::pos2(cell.min.x + 8.0, cell.center().y - g.size().y / 2.0), g, ink);
+        x = cell.max.x;
+    }
+}
+
 /// A progress bar with mono text on it.
 pub fn bar(ui: &mut egui::Ui, frac: f32, color: Color32, text: &str) {
     ui.add(
@@ -170,11 +213,6 @@ pub fn band_meter(ui: &mut egui::Ui, scores: [f32; 3], using: BandUse) {
             egui::StrokeKind::Outside,
         );
     }
-}
-
-/// "+6.2" or "—".
-pub fn db(v: Option<f32>) -> String {
-    v.map_or("—".into(), |v| format!("{v:+.1}"))
 }
 
 /// "L6 QPSK 1/3".
