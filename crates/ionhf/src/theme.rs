@@ -58,13 +58,6 @@ pub fn card() -> egui::Frame {
         .inner_margin(Margin::same(12))
 }
 
-/// The one button that matters on a screen (Connect).
-pub fn primary(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
-        .fill(Color32::from_rgb(0x21, 0x67, 0xB5))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(0x3B, 0x82, 0xD0)))
-}
-
 /// A small caption above a value.
 pub fn caption(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(11.0).color(MUTED));
@@ -111,19 +104,6 @@ pub fn pill(ui: &mut egui::Ui, color: Color32, text: &str, detail: &str) {
         let x2 = x + g1.size().x + 8.0;
         p.galley(egui::pos2(x2, r.center().y - g2.size().y / 2.0), g2, MUTED);
     }
-}
-
-/// Rows of caption / mono value.
-pub fn kv(ui: &mut egui::Ui, id: &str, rows: &[(&str, String)]) {
-    egui::Grid::new(id).num_columns(2).spacing([16.0, 5.0]).show(ui, |ui| {
-        for (k, v) in rows {
-            ui.label(RichText::new(*k).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(v).monospace());
-            });
-            ui.end_row();
-        }
-    });
 }
 
 /// A progress bar with mono text on it.
@@ -181,6 +161,11 @@ pub fn level(l: usize) -> String {
         Some(x) => ion::sounding::level_name(l, x.wave),
         None => "—".into(),
     }
+}
+
+/// A level without "OFDM", which its modulation already implies.
+pub fn level_short(l: usize) -> String {
+    level(l).replacen(" OFDM", "", 1)
 }
 
 /// Bytes as "812 B" or "5.6 kB".

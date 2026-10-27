@@ -245,7 +245,7 @@ impl Host {
             let _ = s.set_nodelay(true);
             self.cmd = Some(s);
             self.line.clear();
-            self.note(format!("Winlink host connected from {addr}"));
+            self.note(format!("Host connected from {addr}"));
         }
         if let Ok((s, _)) = data_l.accept() {
             let _ = s.set_nonblocking(true);
@@ -264,7 +264,7 @@ impl Host {
             match c.read(&mut buf) {
                 Ok(0) => {
                     self.cmd = None;
-                    self.note("Winlink host disconnected".into());
+                    self.note("Host disconnected".into());
                     // Its groups go with it ("KISS 0" stays with the KISS
                     // client).
                     self.bcast_client = false;
@@ -405,7 +405,7 @@ impl Host {
                 let dst = dst.split('-').next().unwrap_or(dst).to_string();
                 self.calling = Some(dst.clone());
                 let _ = self.ion.send(IonCmd::Connect(dst.clone()));
-                self.note(format!("Winlink host: calling {dst}"));
+                self.note(format!("Host: calling {dst}"));
                 self.say("OK");
             }
             ["DISCONNECT"] => {
@@ -442,7 +442,7 @@ impl Host {
                     (false, Some(p)) => {
                         let name = name.join(" ");
                         self.open_port(p, &name);
-                        self.note(format!("Winlink host: group {name} on KISS port {p}"));
+                        self.note(format!("Host: group {name} on KISS port {p}"));
                         self.say(&format!("BCAST PORT {p}"));
                     }
                     _ => self.say("WRONG"),
@@ -514,7 +514,7 @@ impl Host {
                         None => (s.peer.clone(), self.mycall.clone()),
                     };
                     self.say(&format!("CONNECTED {} {} 2300", pair.0, pair.1));
-                    self.note(format!("Winlink host: connected {} → {}", pair.0, pair.1));
+                    self.note(format!("Host: connected {} to {}", pair.0, pair.1));
                     self.connected = Some(pair);
                     self.last_buffer = None;
                 }

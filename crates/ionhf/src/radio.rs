@@ -38,9 +38,6 @@ pub enum LoopCmd {
     SnrDb(f32),
     /// A simulated Ion station "LOOP" that answers calls and echoes text.
     IonPeer(bool),
-    /// A simulated Ion net: `Some(true)` members joining ours,
-    /// `Some(false)` a net with its own net control to join, `None` off.
-    IonNet(Option<bool>),
     Shutdown,
 }
 
@@ -363,8 +360,6 @@ pub fn spawn_loopback(
             // The test peer's bursts, and how far each has played.
             let mut replies: Vec<(Vec<f32>, usize)> = Vec::new();
             let mut peer: Option<crate::ion_engine::PeerLink> = None;
-            let mut net: Option<crate::ion_engine::NetPeers> = None;
-            let mut net_fifo: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
             let mut block = [0.0f32; BLOCK];
             let mut own = [0.0f32; BLOCK];
             let mut next = Instant::now();
@@ -380,10 +375,6 @@ pub fn spawn_loopback(
                         LoopCmd::SnrDb(s) => sigma = noise_sigma(ref_power, s, NOISE_BW_HZ, AUDIO_RATE),
                         LoopCmd::IonPeer(on) => {
                             peer = on.then(crate::ion_engine::spawn_peer);
-                        }
-                        LoopCmd::IonNet(kind) => {
-                            net = kind.map(crate::ion_engine::spawn_net_peers);
-                            net_fifo.clear();
                         }
                         LoopCmd::Shutdown => return,
                     }
@@ -412,20 +403,6 @@ pub fn spawn_loopback(
                     let _ = p.to_peer.send(block.to_vec());
                     while let Ok(a) = p.from_peer.try_recv() {
                         replies.push((a, 0));
-                    }
-                }
-                // The simulated net hears this block; what it sends back plays
-                // as a continuous stream (one block behind).
-                if let Some(nt) = &net {
-                    let _ = nt.to_net.send(block.to_vec());
-                    while let Ok(b) = nt.from_net.try_recv() {
-                        net_fifo.extend(b);
-                    }
-                    for b in block.iter_mut() {
-                        match net_fifo.pop_front() {
-                            Some(x) => *b += x,
-                            None => break,
-                        }
                     }
                 }
                 for (audio, pos) in replies.iter_mut() {

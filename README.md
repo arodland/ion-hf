@@ -4,10 +4,9 @@ Ion HF is an HF data modem for amateur radio, written in Rust. It runs an
 ARQ link that adapts burst by burst across a ladder of waveforms, from
 noncoherent 32-tone MFSK that decodes below −10 dB SNR (in 2.4 kHz) up to
 64QAM OFDM,
-inside a 2.45 kHz channel. On top of the link it offers keyboard chat with
-files and pictures, nets run by a net control station, and a VARA-style
-host interface so Winlink clients such as Pat and Winlink Express can use
-it.
+inside a 2.45 kHz channel. It is a modem: programs use it through a
+VARA-style host interface, Winlink clients such as Pat and Winlink Express
+for links and group chat such as Ragtime's for broadcast groups.
 
 ## Features
 
@@ -21,11 +20,9 @@ it.
   channel rules out.
 - Low-PAPR (DFT-spread) OFDM for the QPSK and 8PSK levels: about 2 dB more
   mean power at the same peak.
-- Nets: check-ins, polled rounds, relays for stations net control cannot
-  hear, bulletins repaired with an erasure code, primed reception of weak
-  check-ins.
 - VARA-style host interface (TCP 8300/8301 on 127.0.0.1) for Pat and
-  Winlink Express.
+  Winlink Express, with broadcast groups on a KISS port (8100) as Data2G's
+  host offers them.
 - Radio control over TCI (ExpertSDR / SunSDR), Icom CI-V, Kenwood /
   Elecraft / Yaesu CAT and Hamlib `rigctld`, or a sound card with PTT by
   CAT, RTS, DTR or VOX.
@@ -66,8 +63,8 @@ ionhf --loopback
 ```
 
 runs Ion with no radio: a simulated station, `LOOP`, answers calls and
-echoes what you send, and the Net tab can start or join simulated nets.
-Set your call under Setup, then Connect to `LOOP` from the Listen tab.
+echoes what you send. Set your call under Setup, then have a host program
+connect to `LOOP` (or start with `--connect LOOP`).
 [docs/app.md](docs/app.md) describes the program, its options and the
 Winlink host interface.
 

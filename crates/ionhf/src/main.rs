@@ -1,22 +1,19 @@
-//! Ion HF: an ARQ data modem for Winlink (over VARA-style host ports),
-//! keyboard links and nets.
+//! Ion HF: an HF data modem for host programs (Ragtime, Pat, Winlink
+//! Express) on VARA-style host ports and KISS.
 //!
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
-//! [--send TEXT] [--file PATH] [--net NAME] [--tab link|listen|net|setup]
-//! [--view chat|charts|log] [--mini] [--shots DIR] [--quit S] [--loop-snr DB]
+//! [--setup] [--shots DIR] [--quit S] [--loop-snr DB]
 //! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
 mod app;
-mod charts;
 mod config;
 mod engine;
 mod history;
 mod host;
 mod ion_engine;
-mod ion_files;
 #[cfg(test)]
 mod pipeline_tests;
 mod radio;
@@ -38,16 +35,10 @@ use crate::engine::{Engine, SAMPLE_RATE, Shared};
 struct Args {
     loopback: bool,
     tci: Option<String>,
-    /// Call this station at start; `send` and `file` go once linked.
+    /// Call this station at start (a test: host programs do this).
     connect: Option<String>,
-    send: Option<String>,
-    file: Option<String>,
-    tab: Option<String>,
-    /// The Link view's centre: chat, charts or log.
-    view: Option<String>,
-    /// Run this net as NCS at start.
-    net: Option<String>,
-    mini: bool,
+    /// Open on Setup.
+    setup: bool,
     /// Save a screenshot to this folder every 15 s; quit after `quit` s.
     shots: Option<String>,
     quit: Option<f64>,
@@ -60,12 +51,7 @@ fn parse_args() -> Args {
         loopback: false,
         tci: None,
         connect: None,
-        send: None,
-        file: None,
-        tab: None,
-        view: None,
-        net: None,
-        mini: false,
+        setup: false,
         shots: None,
         quit: None,
         loop_snr: None,
@@ -76,17 +62,12 @@ fn parse_args() -> Args {
             "--loopback" => args.loopback = true,
             "--tci" => args.tci = it.next(),
             "--connect" => args.connect = it.next(),
-            "--send" => args.send = it.next(),
-            "--file" => args.file = it.next(),
-            "--tab" => args.tab = it.next(),
-            "--view" => args.view = it.next(),
-            "--net" => args.net = it.next(),
-            "--mini" => args.mini = true,
+            "--setup" => args.setup = true,
             "--shots" => args.shots = it.next(),
             "--quit" => args.quit = it.next().and_then(|v| v.parse().ok()),
             "--loop-snr" => args.loop_snr = it.next().and_then(|v| v.parse().ok()),
             "-h" | "--help" => {
-                println!("ionhf [--loopback] [--tci ws://127.0.0.1:50001] [--connect CALL] [--send TEXT]");
+                println!("ionhf [--loopback] [--tci ws://127.0.0.1:50001] [--connect CALL] [--setup]");
                 std::process::exit(0);
             }
             other => eprintln!("ignoring unknown argument {other}"),
@@ -129,9 +110,6 @@ fn main() -> eframe::Result {
     let args = parse_args();
     let mut cfg = Config::load();
     let _ = std::fs::create_dir_all(Config::dir());
-    if args.mini {
-        cfg.mini = true;
-    }
     if let Some(url) = args.tci {
         cfg.tci_url = url;
         cfg.radio.backend = Backend::Tci;
@@ -139,9 +117,8 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if args.loopback { "Ion HF (loopback)" } else { "Ion HF" })
-        .with_inner_size(if cfg.mini { app::MINI_SIZE } else { app::FULL_SIZE })
-        .with_drag_and_drop(true)
-        .with_min_inner_size([480.0, 320.0]);
+        .with_inner_size(app::SIZE)
+        .with_min_inner_size([480.0, 380.0]);
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("window icon: {e}"),
@@ -241,35 +218,8 @@ fn main() -> eframe::Result {
             }
             if let Some(call) = &args.connect {
                 app.connect(call);
-                if let Some(text) = &args.send {
-                    app.compose = text.clone();
-                    app.send_text();
-                }
-                if let Some(f) = &args.file {
-                    app.send_file(std::path::Path::new(f));
-                }
             }
-            if let Some(v) = &args.view {
-                app.center = match v.as_str() {
-                    "charts" => app::Center::Charts,
-                    "log" => app::Center::Log,
-                    _ => app::Center::Chat,
-                };
-            }
-            if let Some(t) = &args.tab {
-                app.tab = match t.as_str() {
-                    "link" => app::Tab::Link,
-                    "net" => app::Tab::Net,
-                    "setup" => app::Tab::Setup,
-                    _ => app::Tab::Listen,
-                };
-            }
-            if let Some(net) = &args.net {
-                app.cfg.net = net.to_ascii_uppercase();
-                app.loop_net(Some(true));
-                app.cmd(crate::ion_engine::IonCmd::NetStart(app.cfg.net.clone()));
-                app.tab = app::Tab::Net;
-            }
+            app.setup |= args.setup;
             app.shots = args.shots.as_ref().map(std::path::PathBuf::from);
             app.quit_after = args.quit;
             Ok(Box::new(app))

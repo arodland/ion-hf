@@ -1,5 +1,5 @@
-//! The Ion worker thread: owns the link [`Node`] (or a [`NetNode`]), and the
-//! broadcast groups a host program opens ([`BcastStation`]); takes
+//! The Ion worker thread: owns the link [`Node`] and the broadcast groups
+//! a host program opens ([`BcastStation`]); takes
 //! received audio from the DSP thread and commands from the UI, and hands
 //! back bursts to transmit, status and received bytes. Decoding a burst
 //! takes tens of milliseconds, so it stays off the DSP and loopback threads.
@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use ion::link::bcast::{BcastConfig, BcastEvent, BcastStation};
-use ion::link::net::{Caps, NetConfig, NetEvent, NetNode, RosterEntry};
 use ion::link::node::{DEFAULT_LEAD_S, NodeAir};
 use ion::link::{Air, Node, Role, State};
 
@@ -48,21 +47,6 @@ pub enum IonCmd {
     DisconnectWhenSent,
     /// Drop everything locally, without transmitting.
     Stop,
-    /// Run a net with this name, as net control.
-    NetStart(String),
-    /// Join this net (empty: the first one heard).
-    NetJoin(String),
-    /// Member: a report for NCS. NCS: a bulletin for everyone.
-    NetSend(Vec<u8>),
-    /// NCS: a message for one member.
-    NetSendTo(String, Vec<u8>),
-    /// NCS: allow check-ins or not.
-    NetOpen(bool),
-    /// NCS: end the net (transmits).
-    NetClose,
-    /// What we announce when we start or join a net next (rig control,
-    /// bandwidth, willing to relay, attended).
-    NetCaps(Caps),
     /// Extra level for OFDM bursts on the air, dB (0 to 3).
     SetOfdmDb(f32),
     /// A Winlink host interface takes the link's received bytes and status
@@ -77,28 +61,6 @@ pub enum IonCmd {
     GroupPersist(u8),
 }
 
-/// The net as the UI shows it.
-#[derive(Clone, Debug, Default)]
-pub struct NetStatus {
-    pub ncs: bool,
-    pub net: String,
-    pub ncs_call: Option<String>,
-    /// Member: our slot.
-    pub slot: Option<u8>,
-    /// NCS: everyone checked in.
-    pub roster: Vec<RosterEntry>,
-    /// Member: the stations announced so far.
-    pub members: Vec<(u8, String)>,
-    /// Member: the relay we go through (NCS cannot reach us directly).
-    pub relay: Option<String>,
-    /// What we announced at check-in.
-    pub caps: Caps,
-    pub open: bool,
-    pub pending: usize,
-    pub closed: bool,
-    pub rounds: u32,
-}
-
 #[derive(Clone, Debug)]
 pub struct IonStatus {
     pub state: State,
@@ -109,9 +71,6 @@ pub struct IonStatus {
     pub snr_db: Option<f32>,
     pub bytes_acked: u64,
     pub bytes_received: u64,
-    /// What we have sent, in our own bytes: acknowledged, and begun.
-    pub text_acked: u64,
-    pub text_started: u64,
     pub pending: usize,
     pub data_bursts: u32,
     pub frames_resent: u32,
@@ -142,6 +101,10 @@ pub struct IonStatus {
     pub slot_tx: u8,
     pub slot_rx: u8,
     pub band: [f32; 3],
+    /// Broadcast groups open, and the stations heard in them lately (call,
+    /// S/N), newest first.
+    pub groups: Vec<String>,
+    pub heard: Vec<(String, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,9 +112,6 @@ pub enum IonEvent {
     Status(IonStatus),
     Received(Vec<u8>),
     Note(String),
-    /// Something happened in the net.
-    Net(NetEvent),
-    NetStatus(NetStatus),
 }
 
 /// The worker's command channel, and its audio channel for the DSP thread.
@@ -185,11 +145,8 @@ pub fn spawn(my_call: String, engine: Sender<Msg>, ui: Sender<UiEvent>, repaint:
 
 struct Worker {
     node: Node,
-    /// Set while in a net (then `node` is idle).
-    net: Option<NetNode>,
     /// Extra level for our OFDM bursts, dB.
     ofdm_db: f32,
-    net_caps: Caps,
     /// A Winlink host (Pat, Winlink Express) driving the link.
     host: Option<Sender<crate::host::HostIn>>,
     call: String,
@@ -225,9 +182,7 @@ impl Worker {
                 Node::new(Node::config(&call), DEFAULT_LEAD_S),
                 ion::link::audio::OFDM_AIR_GAIN_DB,
             ),
-            net: None,
             ofdm_db: ion::link::audio::OFDM_AIR_GAIN_DB,
-            net_caps: Caps::default(),
             host: None,
             call,
             engine,
@@ -317,16 +272,14 @@ impl Worker {
 
     /// A fresh node (keeps nothing of the old link).
     fn reset(&mut self) {
-        if self.node.on_air() || self.net.as_ref().is_some_and(NetNode::on_air) {
+        if self.node.on_air() {
             let _ = self.engine.send(Msg::Abort);
         }
-        let cut_short = self.net.is_some()
-            || !matches!(
-                self.node.station().state(),
-                State::Idle | State::Listening | State::Disconnected | State::Failed
-            );
+        let cut_short = !matches!(
+            self.node.station().state(),
+            State::Idle | State::Listening | State::Disconnected | State::Failed
+        );
         self.node = on_air_settings(Node::new(Node::config(&self.call), DEFAULT_LEAD_S), self.ofdm_db);
-        self.net = None;
         self.connected_at = None;
         self.closing = false;
         // A link cut short still gets its ID, before anything new; one
@@ -334,28 +287,6 @@ impl Worker {
         if cut_short && self.keyed_since_id && self.id_due.is_none() && !self.id_on_air {
             self.id_due = Some(self.now());
         }
-    }
-
-    fn net_status(&self) -> Option<NetStatus> {
-        let n = self.net.as_ref()?;
-        let s = n.station();
-        Some(NetStatus {
-            ncs: s.is_ncs(),
-            net: s.net_name().to_string(),
-            ncs_call: s
-                .ncs_call()
-                .map(str::to_string)
-                .or_else(|| s.is_ncs().then(|| self.call.clone())),
-            slot: s.slot(),
-            roster: if s.is_ncs() { s.roster(self.now()) } else { Vec::new() },
-            members: s.members().iter().map(|(&k, v)| (k, v.clone())).collect(),
-            relay: s.relay_call(),
-            caps: s.caps(),
-            open: s.is_open(),
-            pending: s.pending(),
-            closed: s.closed(),
-            rounds: s.stats.rounds,
-        })
     }
 
     fn command(&mut self, cmd: IonCmd) {
@@ -420,64 +351,6 @@ impl Worker {
                 self.id_due = None;
                 self.note("Ion: stopped");
             }
-            IonCmd::NetStart(name) => {
-                let name = name.trim().to_ascii_uppercase();
-                if self.call.is_empty() || name.is_empty() {
-                    self.note("! a net needs your call (Settings) and a net name");
-                    return;
-                }
-                self.reset();
-                let mut cfg = NetConfig::new(&self.call, &name, true);
-                cfg.caps = self.net_caps;
-                let mut n = NetNode::new(cfg, DEFAULT_LEAD_S);
-                n.set_ofdm_gain_db(self.ofdm_db);
-                self.net = Some(n);
-                self.note(format!(
-                    "Ion net {name}: you are net control; beacon going out (transmits)"
-                ));
-            }
-            IonCmd::NetJoin(name) => {
-                if self.call.is_empty() {
-                    self.note("! set your call in Settings first");
-                    return;
-                }
-                let name = name.trim().to_ascii_uppercase();
-                self.reset();
-                let mut cfg = NetConfig::new(&self.call, &name, false);
-                cfg.caps = self.net_caps;
-                let mut n = NetNode::new(cfg, DEFAULT_LEAD_S);
-                n.set_ofdm_gain_db(self.ofdm_db);
-                self.net = Some(n);
-                self.note(if name.is_empty() {
-                    "Ion net: listening for any net's beacon; you will check in when one opens".to_string()
-                } else {
-                    format!("Ion net: listening for {name}; you will check in when it opens")
-                });
-            }
-            IonCmd::NetSend(bytes) => match self.net.as_mut() {
-                Some(n) => n.station_mut().send(&bytes),
-                None => self.note("! not in a net"),
-            },
-            IonCmd::NetSendTo(call, bytes) => {
-                let ok = self
-                    .net
-                    .as_mut()
-                    .is_some_and(|n| n.station_mut().send_to(&call, &bytes));
-                if !ok {
-                    self.note(format!("! {call} is not checked in"));
-                }
-            }
-            IonCmd::NetOpen(open) => {
-                if let Some(n) = self.net.as_mut() {
-                    n.station_mut().set_open(open);
-                }
-            }
-            IonCmd::NetClose => {
-                if let Some(n) = self.net.as_mut() {
-                    n.station_mut().close();
-                }
-            }
-            IonCmd::NetCaps(c) => self.net_caps = c,
             IonCmd::AttachHost(h) => self.host = h,
             IonCmd::GroupOpen(port, name) => {
                 if let Some(old) = self.ports.remove(&port) {
@@ -504,9 +377,6 @@ impl Worker {
             IonCmd::SetOfdmDb(db) => {
                 self.ofdm_db = db;
                 self.node.set_ofdm_gain_db(db);
-                if let Some(n) = self.net.as_mut() {
-                    n.set_ofdm_gain_db(db);
-                }
             }
         }
     }
@@ -532,8 +402,6 @@ impl Worker {
             snr_db: self.node.last_snr_db,
             bytes_acked: st.bytes_acked,
             bytes_received: st.bytes_received,
-            text_acked: s.text_progress().0,
-            text_started: s.text_progress().1,
             pending: s.pending(),
             data_bursts: st.data_bursts,
             frames_resent: st.frames_resent,
@@ -544,6 +412,8 @@ impl Worker {
             on_air: self.node.on_air() || self.bcast_on_air,
             busy: self.node.busy(),
             connected_s: self.connected_at.map_or(0.0, |t| self.now() - t),
+            groups: self.bcast.groups(),
+            heard: self.bcast.heard(self.now()),
         }
     }
 
@@ -580,21 +450,14 @@ impl Worker {
                     }
                     continue;
                 }
-                match (m, self.net.as_mut()) {
-                    (IonIn::Audio(samples), Some(n)) => n.push_audio(&samples, now),
-                    (IonIn::TxDone, Some(n)) => n.tx_done(now),
-                    (IonIn::Audio(samples), None) => self.node.push_audio(&samples, now),
-                    (IonIn::TxDone, None) => self.node.tx_done(now),
+                match m {
+                    IonIn::Audio(samples) => self.node.push_audio(&samples, now),
+                    IonIn::TxDone => self.node.tx_done(now),
                 }
             }
             let now = self.now();
             // The groups' bursts, as the link's receivers decoded them.
-            let ids = if self.net.is_none() {
-                self.bcast.ids()
-            } else {
-                Vec::new()
-            };
-            self.node.set_groups(&ids);
+            self.node.set_groups(&self.bcast.ids());
             for inc in self.node.take_group() {
                 self.bcast.on_rx(&inc, now);
             }
@@ -602,35 +465,13 @@ impl Worker {
             self.bcast_events();
             // The CW ID when it is due and the channel is ours; nothing
             // else keys while it plays (status still goes out).
-            if !self.id_on_air
-                && !self.bcast_on_air
-                && self.id_due.is_some_and(|t| now >= t)
-                && !self.node.busy()
-                && !self.net.as_ref().is_some_and(NetNode::on_air)
-            {
+            if !self.id_on_air && !self.bcast_on_air && self.id_due.is_some_and(|t| now >= t) && !self.node.busy() {
                 self.id_due = None;
                 self.id_on_air = true;
                 let _ = self.engine.send(Msg::IonTx(self.id_audio()));
                 self.note(format!("Ion: CW ID (DE {})", self.call));
             }
             let hold_tx = self.id_on_air;
-            if let Some(n) = self.net.as_mut() {
-                if !hold_tx && let Some(burst) = n.poll(now) {
-                    self.keyed_since_id = true;
-                    let _ = self.engine.send(Msg::IonTx(burst));
-                }
-                let events = n.station_mut().take_events();
-                for e in events {
-                    self.event(IonEvent::Net(e));
-                }
-                if last_status.elapsed() >= Duration::from_millis(250) {
-                    last_status = Instant::now();
-                    if let Some(s) = self.net_status() {
-                        self.event(IonEvent::NetStatus(s));
-                    }
-                }
-                continue;
-            }
             // Broadcast only between sessions, as Data2G's host.
             let link_idle = matches!(
                 self.node.station().state(),
@@ -708,109 +549,6 @@ impl Worker {
     }
 }
 
-// -- loopback test net -----------------------------------------------------------
-
-/// The loopback radio's line to a simulated net: blocks of what the net
-/// hears go in, one block of what it transmits comes back for each.
-pub struct NetPeers {
-    pub to_net: Sender<Vec<f32>>,
-    pub from_net: Receiver<Vec<f32>>,
-}
-
-/// A simulated net on its own thread, in lock step with the loopback audio.
-/// With `we_run_it`, three members join whatever net we run; W5HID's signal
-/// never reaches us (only W5BBB hears it), so its traffic arrives relayed.
-/// Otherwise "LOOPNC" runs net LOOPNET with two members, and sends a
-/// bulletin, for us to join. The stations hear each other and us.
-pub fn spawn_net_peers(we_run_it: bool) -> NetPeers {
-    let (to_net, heard) = crossbeam_channel::unbounded::<Vec<f32>>();
-    let (send, from_net) = crossbeam_channel::unbounded();
-    std::thread::Builder::new()
-        .name("ion-net-peers".into())
-        .spawn(move || {
-            // (station, gain of its signal at our receiver)
-            let mut peers: Vec<(NetNode, f32, Vec<f32>)> = Vec::new();
-            let member = |call: &str, report: &str| {
-                let mut n = NetNode::new(NetConfig::new(call, "", false), DEFAULT_LEAD_S);
-                n.station_mut().send(report.as_bytes());
-                n
-            };
-            if we_run_it {
-                peers.push((
-                    member("W5AAA", "W5AAA checking in from the EOC. No traffic. 73"),
-                    1.0,
-                    Vec::new(),
-                ));
-                peers.push((
-                    member("W5BBB", "W5BBB mobile, roads clear on I-55 north. 73"),
-                    1.0,
-                    Vec::new(),
-                ));
-                peers.push((
-                    member("W5HID", "W5HID: tree down on Hwy 49 at mile 12, lane blocked"),
-                    0.0,
-                    Vec::new(),
-                ));
-            } else {
-                let mut ncs = NetNode::new(NetConfig::new("LOOPNC", "LOOPNET", true), DEFAULT_LEAD_S);
-                ncs.station_mut()
-                    .send(b"LOOPNET practice net. Send a short report when polled. Net closes on the hour.");
-                peers.push((ncs, 1.0, Vec::new()));
-                peers.push((member("W5AAA", "W5AAA here, no traffic"), 1.0, Vec::new()));
-                peers.push((
-                    member("W5BBB", "W5BBB: shelter at the high school is open"),
-                    0.7,
-                    Vec::new(),
-                ));
-            }
-            let n = peers.len();
-            let mut prev: Vec<Vec<f32>> = vec![Vec::new(); n];
-            let mut t = 0.0f64;
-            for block in heard {
-                let len = block.len();
-                t += len as f64 / SAMPLE_RATE as f64;
-                let mut now_out: Vec<Vec<f32>> = vec![vec![0.0; len]; n];
-                for i in 0..n {
-                    // We hear the net, and each other (last block's audio).
-                    let mut h = block.clone();
-                    for (j, p) in prev.iter().enumerate() {
-                        if j != i {
-                            for (x, y) in h.iter_mut().zip(p) {
-                                *x += y;
-                            }
-                        }
-                    }
-                    let (node, _, out) = &mut peers[i];
-                    node.push_audio(&h, t);
-                    if out.is_empty()
-                        && let Some(a) = node.poll(t)
-                    {
-                        out.extend(a);
-                    }
-                    let k = out.len().min(len);
-                    now_out[i][..k].copy_from_slice(&out[..k]);
-                    out.drain(..k);
-                    if k > 0 && out.is_empty() {
-                        node.tx_done(t);
-                    }
-                    let _ = node.station_mut().take_events();
-                }
-                let mut mix = vec![0.0f32; len];
-                for (i, o) in now_out.iter().enumerate() {
-                    for (m, x) in mix.iter_mut().zip(o) {
-                        *m += x * peers[i].1;
-                    }
-                }
-                prev = now_out;
-                if send.send(mix).is_err() {
-                    return;
-                }
-            }
-        })
-        .expect("spawn ion net peers");
-    NetPeers { to_net, from_net }
-}
-
 // -- loopback test station ------------------------------------------------------
 
 /// The loopback radio's line to the simulated Ion station.
@@ -839,7 +577,6 @@ pub fn spawn_peer() -> PeerLink {
             let mut node = fresh();
             let mut on_air_until: Option<f64> = None;
             let mut line: Vec<u8> = Vec::new();
-            let mut files = crate::ion_files::Demux::new();
             loop {
                 let first = match heard.recv_timeout(Duration::from_millis(20)) {
                     Ok(b) => Some(b),
@@ -860,23 +597,8 @@ pub fn spawn_peer() -> PeerLink {
                         return;
                     }
                 }
-                // Echo whole lines; acknowledge files (`ion_files`).
-                let got = node.station_mut().take_received();
-                for item in files.feed(&got) {
-                    match item {
-                        crate::ion_files::Item::Text(t) => line.extend(t.into_bytes()),
-                        crate::ion_files::Item::Done(h, data) => {
-                            let what = if h.kind == crate::ion_files::Kind::Image {
-                                "picture"
-                            } else {
-                                "file"
-                            };
-                            let reply = format!("LOOP got {what} {} ({} B)\n", h.name, data.len());
-                            node.station_mut().send(reply.as_bytes());
-                        }
-                        _ => {}
-                    }
-                }
+                // Echo whole lines.
+                line.extend(node.station_mut().take_received());
                 while let Some(i) = line.iter().position(|&b| b == b'\n') {
                     let mut reply = b"LOOP copies: ".to_vec();
                     reply.extend(line.drain(..=i));
@@ -885,7 +607,6 @@ pub fn spawn_peer() -> PeerLink {
                 if matches!(node.station().state(), State::Disconnected | State::Failed) && on_air_until.is_none() {
                     node = fresh();
                     line.clear();
-                    files = crate::ion_files::Demux::new();
                 }
             }
         })

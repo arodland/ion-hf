@@ -259,6 +259,30 @@ impl BcastStation {
         self.groups.get(&group).map(|g| g.name.as_str())
     }
 
+    /// The open groups' names.
+    pub fn groups(&self) -> Vec<String> {
+        self.groups.values().map(|g| g.name.clone()).collect()
+    }
+
+    /// Stations heard in the open groups within [`BcastConfig::heard_s`],
+    /// newest first: call and S/N.
+    pub fn heard(&self, now: f64) -> Vec<(String, f32)> {
+        let mut h: Vec<(&String, f32, f64)> = self
+            .heard
+            .iter()
+            .filter(|(_, x)| now - x.1 <= self.cfg.heard_s)
+            .map(|((_, c), x)| (c, x.0, x.1))
+            .collect();
+        h.sort_by(|a, b| b.2.total_cmp(&a.2));
+        let mut out: Vec<(String, f32)> = Vec::new();
+        for (c, snr, _) in h {
+            if !out.iter().any(|o| o.0 == *c) {
+                out.push((c.clone(), snr));
+            }
+        }
+        out
+    }
+
     /// The 8-bit ids of the open groups (the PHY header's session field).
     pub fn ids(&self) -> Vec<u8> {
         self.groups.values().map(|g| g.id).collect()

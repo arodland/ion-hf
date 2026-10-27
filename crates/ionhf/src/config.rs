@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-const RECENT: usize = 8;
 const FILE: &str = "ionhf.toml";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -103,12 +102,6 @@ impl Config {
         if let Err(e) = result {
             log::warn!("could not save {}: {e}", path.display());
         }
-    }
-
-    pub fn remember(&mut self, call: &str) {
-        self.recent.retain(|c| c != call);
-        self.recent.insert(0, call.to_string());
-        self.recent.truncate(RECENT);
     }
 
     /// TCI's rate on the wire; anything but 12 or 24 kHz is 48 kHz.

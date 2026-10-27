@@ -8,11 +8,14 @@ use eframe::egui::{self, Margin, RichText};
 use crate::app::App;
 use crate::theme;
 
-const CARD_W: f32 = 380.0;
+/// Narrowest card body; the cards share the width beyond it.
+const CARD_MIN: f32 = 260.0;
+/// A card's frame: margins and stroke.
+const CARD_EDGE: f32 = 26.0;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(theme::BG).inner_margin(Margin::same(16)))
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(Margin::same(12)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 // Cards in rows, as many across as fit.
@@ -24,13 +27,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ("Keying", keying),
                     ("Host", host),
                 ];
-                let gap = 16.0;
-                let across = (((ui.available_width() + gap) / (CARD_W + 24.0 + gap)) as usize).max(1);
+                let gap = 12.0;
+                let avail = ui.available_width();
+                let across = (((avail + gap) / (CARD_MIN + CARD_EDGE + gap)) as usize).max(1);
+                let w = (avail - gap * (across - 1) as f32) / across as f32 - CARD_EDGE;
                 ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
                 for row in cards.chunks(across) {
                     ui.horizontal_top(|ui| {
                         for (title, body) in row {
-                            card(ui, title, |ui| body(app, ui));
+                            card(ui, title, w, |ui| body(app, ui));
                         }
                     });
                 }
@@ -38,13 +43,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
-fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+fn card(ui: &mut egui::Ui, title: &str, width: f32, body: impl FnOnce(&mut egui::Ui)) {
     theme::card().show(ui, |ui| {
-        ui.set_width(CARD_W);
-        ui.set_min_height(170.0);
+        ui.set_width(width);
         ui.vertical(|ui| {
             ui.label(RichText::new(title).strong().size(14.0));
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             body(ui);
         });
     });
@@ -53,8 +57,8 @@ fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
 fn row(ui: &mut egui::Ui, grid: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(grid)
         .num_columns(2)
-        .spacing([14.0, 8.0])
-        .min_col_width(80.0)
+        .spacing([12.0, 6.0])
+        .min_col_width(60.0)
         .show(ui, body);
 }
 
@@ -120,12 +124,20 @@ fn radio(app: &mut App, ui: &mut egui::Ui) {
         match r.backend {
             Backend::Tci => {
                 ui.label(RichText::new("TCI").color(theme::MUTED));
-                ui.add(egui::TextEdit::singleline(&mut app.cfg.tci_url).font(egui::TextStyle::Monospace));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.cfg.tci_url)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(ui.available_width()),
+                );
                 ui.end_row();
             }
             Backend::Rigctld => {
                 ui.label(RichText::new("rigctld").color(theme::MUTED));
-                ui.add(egui::TextEdit::singleline(&mut r.rigctld_addr).font(egui::TextStyle::Monospace));
+                ui.add(
+                    egui::TextEdit::singleline(&mut r.rigctld_addr)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(ui.available_width()),
+                );
                 ui.end_row();
             }
             Backend::Icom | Backend::Cat => {
@@ -215,7 +227,7 @@ fn device(ui: &mut egui::Ui, id: &str, value: &mut String, list: &[String]) {
     };
     egui::ComboBox::from_id_salt(id)
         .selected_text(shown)
-        .width(230.0)
+        .width(ui.available_width().min(230.0))
         .show_ui(ui, |ui| {
             ui.selectable_value(value, String::new(), "Default");
             for d in list {

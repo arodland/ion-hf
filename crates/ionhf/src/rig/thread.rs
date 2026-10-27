@@ -37,7 +37,7 @@ pub type LineOpener = Box<dyn FnMut() -> RigResult<LinePtt> + Send>;
 pub fn open_rig(cfg: &RadioSettings) -> RigResult<Box<dyn Rig>> {
     let need_port = || {
         if cfg.port.trim().is_empty() {
-            Err(RigError::Link("choose the radio's COM port in Settings → Radio".into()))
+            Err(RigError::Link("choose the radio's COM port in Setup".into()))
         } else {
             Ok(cfg.port.trim().to_string())
         }
@@ -71,7 +71,7 @@ fn line_opener(cfg: &RadioSettings) -> Option<LineOpener> {
     let name = cfg.ptt_port.trim().to_string();
     if cfg.backend == Backend::None && name.is_empty() {
         return Some(Box::new(|| {
-            Err(RigError::Link("choose the PTT COM port in Settings → Radio".into()))
+            Err(RigError::Link("choose the PTT COM port in Setup".into()))
         }));
     }
     // No port of its own: the line on the CAT port.
@@ -380,7 +380,7 @@ impl Station {
         match r {
             Ok(()) => {}
             Err(RigError::Unsupported) => {
-                self.warn("this radio has no CAT PTT: choose RTS, DTR or VOX in Settings → Radio".into())
+                self.warn("this radio has no CAT PTT: choose RTS, DTR or VOX in Setup".into())
             }
             Err(e) => {
                 self.warn(format!("PTT {}: {e}", if on { "on" } else { "off" }));

@@ -116,8 +116,7 @@ version:
 
 The check-in also carries the protocol version (`PROTOCOL` = 2) and the
 software version (major and minor, a nibble each). NCS shows all of it in
-the roster (`RosterEntry`), and picks only willing stations as relays. In
-Ion HF the flags are the Caps checkboxes of the Net tab.
+the roster (`RosterEntry`), and picks only willing stations as relays.
 
 ### The received list
 
