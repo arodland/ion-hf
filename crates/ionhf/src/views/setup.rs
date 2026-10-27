@@ -59,7 +59,7 @@ fn row(ui: &mut egui::Ui, grid: &str, body: impl FnOnce(&mut egui::Ui)) {
 }
 
 fn station(app: &mut App, ui: &mut egui::Ui) {
-    let mut call = app.cfg.call.clone();
+    let mut call = app.call_draft.clone().unwrap_or_else(|| app.cfg.call.clone());
     let mut grid = app.cfg.grid.clone();
     row(ui, "station", |ui| {
         ui.label(RichText::new("Call").color(theme::MUTED));
@@ -68,8 +68,14 @@ fn station(app: &mut App, ui: &mut egui::Ui) {
                 .font(egui::TextStyle::Monospace)
                 .char_limit(10),
         );
-        if c.lost_focus() && call.trim().to_ascii_uppercase() != app.cfg.call {
-            app.set_call(call.clone());
+        // A new call restarts the station, so it applies when the box is left.
+        if c.lost_focus() {
+            app.call_draft = None;
+            if call.trim().to_ascii_uppercase() != app.cfg.call {
+                app.set_call(call.clone());
+            }
+        } else if c.has_focus() {
+            app.call_draft = Some(call.clone());
         }
         ui.end_row();
         ui.label(RichText::new("Grid").color(theme::MUTED));

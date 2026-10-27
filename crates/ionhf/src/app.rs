@@ -151,6 +151,8 @@ pub struct App {
     /// next one ends, in the link's acknowledged bytes.
     sent_bytes: u64,
     pub compose: String,
+    /// The Call box while it is being edited.
+    pub call_draft: Option<String>,
     pub net_text: String,
     pub net_to: String,
     /// What we announce when we start or join a net.
@@ -214,6 +216,7 @@ impl App {
             file_path: String::new(),
             sent_bytes: 0,
             compose: String::new(),
+            call_draft: None,
             net_text: String::new(),
             net_to: String::new(),
             net_caps: Default::default(),
