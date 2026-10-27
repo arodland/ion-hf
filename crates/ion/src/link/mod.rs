@@ -2,6 +2,7 @@
 
 pub mod apriori;
 pub mod audio;
+pub mod bcast;
 pub mod compress;
 pub mod frame;
 pub mod harq;

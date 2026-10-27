@@ -300,7 +300,8 @@ fn winlink_host_drives_a_ion_link() {
 
 /// A client made for Data2G's host (Ragtime) comes up on Ion: it opens the
 /// KISS port beside the command and data ports, sends its start-up
-/// commands, is refused only the Data2G extras, and holds a session.
+/// commands, gets its broadcast group and Ion's one mode (and is refused
+/// only `DATA2G ON`), and holds a session.
 #[test]
 fn ragtime_style_client_comes_up_and_holds_a_session() {
     let mut rig = Rig::new();
@@ -322,10 +323,19 @@ fn ragtime_style_client_comes_up_and_holds_a_session() {
         c.send(l);
     }
     kiss.write_all(&[0xC0, 0x02, 191, 0xC0]).unwrap();
-    assert!(c.read_until(&mut rig, 5, |s| s.len() >= 7), "{:?}", c.said);
+    assert!(c.read_until(&mut rig, 5, |s| s.len() >= 8), "{:?}", c.said);
     assert_eq!(
-        c.said[..7],
-        ["OK", "OK", "WRONG", "OK", "OK", "WRONG", "WRONG"],
+        c.said[..8],
+        [
+            "OK",
+            "OK",
+            "WRONG",
+            "OK",
+            "OK",
+            "BCAST PORT 1",
+            "MODE ION 2400 255 16 3.0 30.0",
+            "OK"
+        ],
         "{:?}",
         c.said
     );

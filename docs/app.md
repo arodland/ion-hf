@@ -76,9 +76,27 @@ far end has not yet acknowledged (Pat waits for 0 before closing).
 (a client's farewell still goes), giving up on the rest after 30 s;
 `ABORT` closes at once.
 `PTT ON/OFF` is for information only: Ion keys the radio itself. `SN`
-gives the S/N of the last burst heard. A KISS port 200 below the command
-port accepts a connection and discards what it is sent, for clients that
-open it alongside the command port.
+gives the S/N of the last burst heard. `ABORT` also drops what broadcast
+frames are queued.
+
+Broadcast groups ([broadcast.md](broadcast.md)), as Data2G's host offers
+them, on the KISS port 200 below the command port (8100):
+
+| Command | Reply | |
+|---|---|---|
+| `BCAST OPEN group [FROM call]` | `BCAST PORT n` | a KISS port (1–15) for the group; the sender's call always goes |
+| `BCAST CLOSE n` | `OK` / `WRONG` | |
+| `BCAST MODE n ...` | `OK` / `WRONG` | `OK` for an open port: Ion picks the level |
+| `MODES` | `MODE ION 2400 255 16 3.0 30.0`, `OK` | one mode, for a client sizing frames and timing repairs |
+
+- Port 0 is the group "KISS 0" while a KISS client is connected.
+- Frames: KISS data (command 0) on the group's port, or ACKMODE (0x0C,
+  a 2-byte tag, then the frame); the tag comes back once the frame has
+  gone out. KISS persistence (command 2) sets P for every group.
+- Once the command client has sent a `BCAST` command it gets `BCAST n
+  HEARD [call] snr` (a burst of the group, its call when its header
+  decoded), `BCAST n LOST k` and `BCAST n DROPPED k`.
+- When the command client goes, its groups close.
 
 ## On the air
 

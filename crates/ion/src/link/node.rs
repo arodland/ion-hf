@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::audio::{self, PhyAir, Receivers};
 use super::frame::{AckInfo, Frame, Kind, Tiny};
-use super::station::{Air, CONTROL, Config, Incoming, Station, TINY, user_hi};
+use super::station::{Air, CONTROL, Config, Incoming, Station, TINY, user_hi, user_session};
 use crate::level::{LADDER, Wave};
 
 /// One burst sent or heard, for the operator's log.
@@ -137,6 +137,9 @@ pub struct Node {
     /// When we last keyed, and the peer whose ID length the station knows.
     last_key: f64,
     id_peer: String,
+    /// Broadcast groups' bursts (by their ids) are kept for them as well.
+    groups: Vec<u8>,
+    group_in: Vec<Incoming>,
 }
 
 impl Node {
@@ -153,6 +156,8 @@ impl Node {
             bursts_heard: 0,
             codewords_failed: 0,
             journal: Vec::new(),
+            groups: Vec::new(),
+            group_in: Vec::new(),
             id_every_s: None,
             last_key: f64::NEG_INFINITY,
             id_peer: String::new(),
@@ -201,6 +206,9 @@ impl Node {
         self.rx.process(samples, &mut self.bursts);
         for inc in std::mem::take(&mut self.bursts) {
             self.bursts_heard += 1;
+            if self.groups.contains(&user_session(inc.user)) {
+                self.group_in.push(inc.clone());
+            }
             // Long-frame codewords are decoded (and counted) by the station.
             let before = self.station.stats().codewords_failed;
             self.last_snr_db = Some(inc.snr_db);
@@ -226,6 +234,20 @@ impl Node {
                 reported_db,
             });
         }
+    }
+
+    /// Keep the bursts of the broadcast groups with these ids (for a
+    /// [`super::bcast::BcastStation`] beside the link).
+    pub fn set_groups(&mut self, ids: &[u8]) {
+        if self.groups != ids {
+            self.groups = ids.to_vec();
+            self.group_in.clear();
+        }
+    }
+
+    /// The groups' bursts heard since the last call.
+    pub fn take_group(&mut self) -> Vec<Incoming> {
+        std::mem::take(&mut self.group_in)
     }
 
     /// Receiving a burst, or transmitting one: not the moment to key.

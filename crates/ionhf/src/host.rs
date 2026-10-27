@@ -9,10 +9,17 @@
 //! information only, as Ion keys the radio itself; `SN` gives the last S/N
 //! heard.
 //!
-//! A KISS port 200 below the command port takes a connection and drops
-//! what it is sent: clients made for Data2G's host open it alongside the
-//! command port and give up without it. Ion has no broadcast mode for it to
-//! carry.
+//! Broadcast groups as Data2G's host offers them (its `docs/broadcast.md`),
+//! on the KISS port 200 below the command port: port 0 is the group
+//! "KISS 0" while a KISS client is connected; `BCAST OPEN group [FROM call]`
+//! opens another (`BCAST PORT n`, 1–15) for the command client. A group's
+//! frames go to every station of it once, with no resend
+//! ([`ion::link::bcast`]), between sessions. KISS ACKMODE (0x0C) tags come
+//! back once a frame has gone out; KISS persistence (command 2) sets P.
+//! Once the command client has sent a `BCAST` command it gets
+//! `BCAST n HEARD [call] snr`, `BCAST n LOST k` and `BCAST n DROPPED k`.
+//! `MODES` lists one mode, `ION` (Ion picks its levels itself), and
+//! `BCAST MODE n ...` is answered `OK` for an open port.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -31,6 +38,81 @@ use crate::ion_engine::{IonCmd, IonStatus};
 pub enum HostIn {
     Status(IonStatus),
     Received(Vec<u8>),
+    /// A frame of the group on this KISS port.
+    GroupFrame(u8, Vec<u8>),
+    /// A burst of the group from `call` (None: its header was lost), S/N.
+    GroupHeard(u8, Option<String>, f32),
+    /// At least this many frames of a burst of the group were lost.
+    GroupLost(u8, u32),
+    /// This many of our frames for the group were dropped unsent.
+    GroupDropped(u8, u32),
+    /// Our frame with this ACKMODE tag has gone out.
+    GroupSent(u16),
+}
+
+/// KISS framing.
+const FEND: u8 = 0xC0;
+const FESC: u8 = 0xDB;
+const TFEND: u8 = 0xDC;
+const TFESC: u8 = 0xDD;
+const KISS_DATA: u8 = 0x00;
+const KISS_PERSIST: u8 = 0x02;
+const KISS_ACKMODE: u8 = 0x0C;
+/// KISS ports a command client may open groups on (0 is "KISS 0").
+const MAX_PORT: u8 = 15;
+/// What `MODES` says of Ion's broadcast, for a client sizing its frames and
+/// timing its repairs: name, width (Hz), bytes a codeword, codewords a
+/// burst at most, seconds at one codeword and at the most (a middling
+/// level: Ion picks its own from the stations it hears).
+const ION_MODE: &str = "MODE ION 2400 255 16 3.0 30.0";
+
+fn kiss_frame(command: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![FEND, command];
+    for &b in payload {
+        match b {
+            FEND => out.extend([FESC, TFEND]),
+            FESC => out.extend([FESC, TFESC]),
+            b => out.push(b),
+        }
+    }
+    out.push(FEND);
+    out
+}
+
+/// Whole KISS frames out of `buf` (command byte, payload), leaving a
+/// partial one there.
+fn kiss_frames(buf: &mut Vec<u8>) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::new();
+    loop {
+        let Some(start) = buf.iter().position(|&b| b == FEND) else {
+            buf.clear();
+            return out;
+        };
+        let Some(len) = buf[start + 1..].iter().position(|&b| b == FEND) else {
+            buf.drain(..start);
+            return out;
+        };
+        let raw: Vec<u8> = buf.drain(..start + 1 + len).skip(start + 1).collect();
+        let mut frame = Vec::with_capacity(raw.len());
+        let mut esc = false;
+        for b in raw {
+            if esc {
+                frame.push(match b {
+                    TFEND => FEND,
+                    TFESC => FESC,
+                    b => b,
+                });
+                esc = false;
+            } else if b == FESC {
+                esc = true;
+            } else {
+                frame.push(b);
+            }
+        }
+        if let Some((&command, payload)) = frame.split_first() {
+            out.push((command, payload.to_vec()));
+        }
+    }
 }
 
 pub struct HostHandle {
@@ -100,6 +182,13 @@ struct Host {
     /// Bytes from the host waiting for the data socket to accept them
     /// (and received bytes waiting for the host).
     to_host: Vec<u8>,
+    /// KISS bytes from the client not yet a whole frame, and ours for it.
+    kiss_in: Vec<u8>,
+    kiss_out: Vec<u8>,
+    /// Groups open, by KISS port.
+    ports: std::collections::BTreeMap<u8, String>,
+    /// The command client has sent a BCAST command: it gets the statuses.
+    bcast_client: bool,
 }
 
 impl Host {
@@ -122,6 +211,10 @@ impl Host {
             last_snr: None,
             alive_at: Instant::now(),
             to_host: Vec::new(),
+            kiss_in: Vec::new(),
+            kiss_out: Vec::new(),
+            ports: std::collections::BTreeMap::new(),
+            bcast_client: false,
         }
     }
 
@@ -162,6 +255,9 @@ impl Host {
         if let Some(Ok((s, _))) = kiss_l.map(TcpListener::accept) {
             let _ = s.set_nonblocking(true);
             self.kiss = Some(s);
+            self.kiss_in.clear();
+            self.kiss_out.clear();
+            self.open_port(0, "KISS 0");
         }
         let mut buf = [0u8; 1024];
         if let Some(c) = self.cmd.as_mut() {
@@ -169,6 +265,13 @@ impl Host {
                 Ok(0) => {
                     self.cmd = None;
                     self.note("Winlink host disconnected".into());
+                    // Its groups go with it ("KISS 0" stays with the KISS
+                    // client).
+                    self.bcast_client = false;
+                    let open: Vec<u8> = self.ports.keys().copied().filter(|&p| p != 0).collect();
+                    for p in open {
+                        self.close_port(p);
+                    }
                 }
                 Ok(n) => self.line.extend_from_slice(&buf[..n]),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {}
@@ -182,12 +285,34 @@ impl Host {
                 self.command(&text);
             }
         }
+        let mut kiss_gone = false;
         if let Some(k) = self.kiss.as_mut() {
             match k.read(&mut buf) {
-                Ok(0) => self.kiss = None,
-                Ok(_) => {}
+                Ok(0) => kiss_gone = true,
+                Ok(n) => self.kiss_in.extend_from_slice(&buf[..n]),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                Err(_) => self.kiss = None,
+                Err(_) => kiss_gone = true,
+            }
+        }
+        if kiss_gone {
+            self.kiss = None;
+            self.close_port(0);
+        }
+        for (command, payload) in kiss_frames(&mut self.kiss_in) {
+            let port = command >> 4;
+            match command & 0x0F {
+                KISS_DATA if self.ports.contains_key(&port) && !payload.is_empty() => {
+                    let _ = self.ion.send(IonCmd::GroupSend(port, payload, None));
+                }
+                KISS_ACKMODE if self.ports.contains_key(&port) && payload.len() > 2 => {
+                    let tag = u16::from_be_bytes([payload[0], payload[1]]);
+                    let _ = self.ion.send(IonCmd::GroupSend(port, payload[2..].to_vec(), Some(tag)));
+                }
+                KISS_PERSIST if !payload.is_empty() => {
+                    let _ = self.ion.send(IonCmd::GroupPersist(payload[0]));
+                }
+                // Other ports, and settings that mean nothing to Ion.
+                _ => {}
             }
         }
         // Data from the host goes onto the link.
@@ -205,6 +330,32 @@ impl Host {
             match m {
                 HostIn::Received(b) => self.to_host.extend(b),
                 HostIn::Status(s) => self.status(&s),
+                HostIn::GroupFrame(p, b) if self.ports.contains_key(&p) => {
+                    self.kiss_out.extend(kiss_frame(p << 4 | KISS_DATA, &b));
+                }
+                HostIn::GroupSent(tag) => {
+                    // To the KISS client that tagged it; the port byte is
+                    // the group's, which a client keys on the tag alone.
+                    self.kiss_out.extend(kiss_frame(KISS_ACKMODE, &tag.to_be_bytes()));
+                }
+                HostIn::GroupHeard(p, call, snr) if self.bcast_client => {
+                    let who = call.map(|c| format!("{c} ")).unwrap_or_default();
+                    self.say(&format!("BCAST {p} HEARD {who}{snr:.1}"));
+                }
+                HostIn::GroupLost(p, k) if self.bcast_client => self.say(&format!("BCAST {p} LOST {k}")),
+                HostIn::GroupDropped(p, k) if self.bcast_client => self.say(&format!("BCAST {p} DROPPED {k}")),
+                _ => {}
+            }
+        }
+        if !self.kiss_out.is_empty()
+            && let Some(k) = self.kiss.as_mut()
+        {
+            match k.write(&self.kiss_out) {
+                Ok(n) => {
+                    self.kiss_out.drain(..n);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => self.kiss = None,
             }
         }
         if !self.to_host.is_empty()
@@ -283,6 +434,39 @@ impl Host {
                 None => self.say("WRONG"),
             },
             ["VERSION"] => self.say(&format!("VERSION IonHF {}", env!("CARGO_PKG_VERSION"))),
+            ["BCAST", "OPEN", rest @ ..] => {
+                self.bcast_client = true;
+                let name: Vec<&str> = rest.iter().take_while(|w| **w != "FROM").copied().collect();
+                let free = (1..=MAX_PORT).find(|p| !self.ports.contains_key(p));
+                match (name.is_empty(), free) {
+                    (false, Some(p)) => {
+                        let name = name.join(" ");
+                        self.open_port(p, &name);
+                        self.note(format!("Winlink host: group {name} on KISS port {p}"));
+                        self.say(&format!("BCAST PORT {p}"));
+                    }
+                    _ => self.say("WRONG"),
+                }
+            }
+            ["BCAST", "CLOSE", n] => {
+                self.bcast_client = true;
+                match n.parse::<u8>() {
+                    Ok(p) if p > 0 && self.ports.contains_key(&p) => {
+                        self.close_port(p);
+                        self.say("OK");
+                    }
+                    _ => self.say("WRONG"),
+                }
+            }
+            ["BCAST", "MODE", n, ..] => {
+                self.bcast_client = true;
+                let open = n.parse::<u8>().is_ok_and(|p| self.ports.contains_key(&p));
+                self.say(if open { "OK" } else { "WRONG" });
+            }
+            ["MODES"] => {
+                self.say(ION_MODE);
+                self.say("OK");
+            }
             [w, ..]
                 if w.starts_with("BW")
                     || matches!(
@@ -296,6 +480,17 @@ impl Host {
                 log::info!("Winlink host: unknown command {text:?}");
                 self.say("WRONG");
             }
+        }
+    }
+
+    fn open_port(&mut self, p: u8, name: &str) {
+        self.ports.insert(p, name.to_string());
+        let _ = self.ion.send(IonCmd::GroupOpen(p, name.to_string()));
+    }
+
+    fn close_port(&mut self, p: u8) {
+        if self.ports.remove(&p).is_some() {
+            let _ = self.ion.send(IonCmd::GroupClose(p));
         }
     }
 

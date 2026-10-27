@@ -1,4 +1,5 @@
-//! A whole net on a simulated clock: any number of [`NetStation`]s, an SNR
+//! A whole net on a simulated clock: any number of [`NetStation`]s (or
+//! other [`SimStation`]s, such as [`super::bcast::BcastStation`]), an SNR
 //! for every (sender, receiver) pair, slow fading, collisions and carrier
 //! sense. Frame loss comes from the ladder thresholds, as in
 //! [`super::sim::ModelMedium`].
@@ -11,6 +12,52 @@ use super::net::NetStation;
 use super::sim::control_threshold_db;
 use super::station::{Air, Incoming, Outgoing, TINY};
 
+/// A station the simulator can drive: it keys bursts and hears them on
+/// the simulator's clock.
+pub trait SimStation {
+    fn poll_tx(&mut self, now: f64) -> Option<Outgoing>;
+    fn on_tx_done(&mut self, t: f64);
+    /// A burst arrived, ending at `now`; `air`: (start, end) on our clock.
+    fn on_rx_at(&mut self, inc: &Incoming, now: f64, air: Option<(f64, f64)>);
+    fn set_busy(&mut self, busy: bool);
+}
+
+impl SimStation for NetStation {
+    fn poll_tx(&mut self, now: f64) -> Option<Outgoing> {
+        NetStation::poll_tx(self, now)
+    }
+
+    fn on_tx_done(&mut self, t: f64) {
+        NetStation::on_tx_done(self, t)
+    }
+
+    fn on_rx_at(&mut self, inc: &Incoming, now: f64, air: Option<(f64, f64)>) {
+        NetStation::on_rx_at(self, inc, now, air)
+    }
+
+    fn set_busy(&mut self, busy: bool) {
+        NetStation::set_busy(self, busy)
+    }
+}
+
+impl SimStation for super::bcast::BcastStation {
+    fn poll_tx(&mut self, now: f64) -> Option<Outgoing> {
+        super::bcast::BcastStation::poll_tx(self, now)
+    }
+
+    fn on_tx_done(&mut self, t: f64) {
+        super::bcast::BcastStation::on_tx_done(self, t)
+    }
+
+    fn on_rx_at(&mut self, inc: &Incoming, now: f64, _air: Option<(f64, f64)>) {
+        self.on_rx(inc, now)
+    }
+
+    fn set_busy(&mut self, busy: bool) {
+        super::bcast::BcastStation::set_busy(self, busy)
+    }
+}
+
 /// A burst on the air.
 #[derive(Clone, Debug)]
 struct Flight {
@@ -20,8 +67,10 @@ struct Flight {
     burst: Outgoing,
 }
 
-pub struct NetSim {
-    pub stations: Vec<NetStation>,
+pub struct NetSim<S: SimStation = NetStation> {
+    pub stations: Vec<S>,
+    /// Stations switched on: one that is off neither hears nor sends.
+    pub on: Vec<bool>,
     /// Mean SNR, dB in 2.4 kHz, from `[from][to]`.
     pub snr: Vec<Vec<f32>>,
     /// Slow fade on every path (standard deviation, dB) and its time scale.
@@ -42,11 +91,12 @@ pub struct NetSim {
     noise: NoiseGen,
 }
 
-impl NetSim {
-    pub fn new(stations: Vec<NetStation>, snr_db: f32, air: Arc<dyn Air>, seed: u64) -> Self {
+impl<S: SimStation> NetSim<S> {
+    pub fn new(stations: Vec<S>, snr_db: f32, air: Arc<dyn Air>, seed: u64) -> Self {
         let n = stations.len();
         Self {
             stations,
+            on: vec![true; n],
             snr: vec![vec![snr_db; n]; n],
             fade_db: 0.0,
             fade_tau_s: 30.0,
@@ -69,7 +119,7 @@ impl NetSim {
         self.snr[b][a] = snr_db;
     }
 
-    pub fn run_until(&mut self, t_max: f64, mut done: impl FnMut(&NetSim) -> bool) -> bool {
+    pub fn run_until(&mut self, t_max: f64, mut done: impl FnMut(&Self) -> bool) -> bool {
         while self.t < t_max {
             if done(self) {
                 return true;
@@ -113,7 +163,7 @@ impl NetSim {
         for f in &done {
             self.stations[f.from].on_tx_done(f.end);
             for r in 0..self.stations.len() {
-                if r == f.from {
+                if r == f.from || !self.on[r] {
                     continue;
                 }
                 // Half duplex: deaf while transmitting over any part of it.
@@ -174,7 +224,7 @@ impl NetSim {
             self.stations[r].set_busy(busy);
         }
         for s in 0..self.stations.len() {
-            if self.flights.iter().any(|o| o.from == s) {
+            if !self.on[s] || self.flights.iter().any(|o| o.from == s) {
                 continue;
             }
             if let Some(b) = self.stations[s].poll_tx(t) {

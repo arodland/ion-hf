@@ -1,14 +1,18 @@
-//! The Ion worker thread: owns the link [`Node`] (or a [`NetNode`]), takes
+//! The Ion worker thread: owns the link [`Node`] (or a [`NetNode`]), and the
+//! broadcast groups a host program opens ([`BcastStation`]); takes
 //! received audio from the DSP thread and commands from the UI, and hands
 //! back bursts to transmit, status and received bytes. Decoding a burst
 //! takes tens of milliseconds, so it stays off the DSP and loopback threads.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use ion::link::bcast::{BcastConfig, BcastEvent, BcastStation};
 use ion::link::net::{Caps, NetConfig, NetEvent, NetNode, RosterEntry};
-use ion::link::node::DEFAULT_LEAD_S;
-use ion::link::{Node, Role, State};
+use ion::link::node::{DEFAULT_LEAD_S, NodeAir};
+use ion::link::{Air, Node, Role, State};
 
 use crate::engine::{Msg, SAMPLE_RATE, UiEvent};
 
@@ -64,6 +68,13 @@ pub enum IonCmd {
     /// A Winlink host interface takes the link's received bytes and status
     /// (`None`: it has gone).
     AttachHost(Option<Sender<crate::host::HostIn>>),
+    /// A host program opens a broadcast group on its KISS port `port`.
+    GroupOpen(u8, String),
+    GroupClose(u8),
+    /// A frame for the group on `port`; `tag`: told back once it is sent.
+    GroupSend(u8, Vec<u8>, Option<u16>),
+    /// KISS persistence P for every group.
+    GroupPersist(u8),
 }
 
 /// The net as the UI shows it.
@@ -196,10 +207,19 @@ struct Worker {
     id_on_air: bool,
     /// We asked for the goodbye (so we ID first).
     closing: bool,
+    /// Broadcast groups, beside the link; sessions go first.
+    bcast: BcastStation,
+    /// KISS port → group, and back.
+    ports: BTreeMap<u8, usize>,
+    /// The broadcast burst is on the air.
+    bcast_on_air: bool,
+    /// When broadcast traffic last brought on a CW ID.
+    bcast_id_at: f64,
 }
 
 impl Worker {
     fn new(call: String, engine: Sender<Msg>, ui: Sender<UiEvent>, repaint: Box<dyn Fn() + Send>) -> Self {
+        let bcast_call = call.clone();
         Self {
             node: on_air_settings(
                 Node::new(Node::config(&call), DEFAULT_LEAD_S),
@@ -220,6 +240,44 @@ impl Worker {
             id_due: None,
             id_on_air: false,
             closing: false,
+            bcast: BcastStation::new(
+                BcastConfig::new(&bcast_call),
+                Arc::new(NodeAir { lead_s: DEFAULT_LEAD_S }) as Arc<dyn Air>,
+            ),
+            ports: BTreeMap::new(),
+            bcast_on_air: false,
+            bcast_id_at: f64::NEG_INFINITY,
+        }
+    }
+
+    fn send_host(&mut self, m: crate::host::HostIn) {
+        if let Some(h) = &self.host
+            && h.send(m).is_err()
+        {
+            self.host = None;
+        }
+    }
+
+    fn port_of(&self, group: usize) -> Option<u8> {
+        self.ports.iter().find(|(_, g)| **g == group).map(|(&p, _)| p)
+    }
+
+    /// What the groups heard and sent, for the host.
+    fn bcast_events(&mut self) {
+        use crate::host::HostIn;
+        for e in self.bcast.take_events() {
+            let m = match e {
+                BcastEvent::Frame { group, data } => self.port_of(group).map(|p| HostIn::GroupFrame(p, data)),
+                BcastEvent::Heard { group, call, snr_db } => {
+                    self.port_of(group).map(|p| HostIn::GroupHeard(p, call, snr_db))
+                }
+                BcastEvent::Lost { group, frames } => self.port_of(group).map(|p| HostIn::GroupLost(p, frames)),
+                BcastEvent::Dropped { group, .. } => self.port_of(group).map(|p| HostIn::GroupDropped(p, 1)),
+                BcastEvent::Sent { tag } => Some(HostIn::GroupSent(tag)),
+            };
+            if let Some(m) = m {
+                self.send_host(m);
+            }
         }
     }
 
@@ -306,6 +364,7 @@ impl Worker {
             IonCmd::SetCall(c) => {
                 let c = c.trim().to_ascii_uppercase();
                 if c != self.call {
+                    self.bcast.set_call(&c);
                     self.call = c;
                     self.reset();
                 }
@@ -339,10 +398,21 @@ impl Worker {
                 self.node.station_mut().disconnect_when_sent(now, HOST_DRAIN_S);
             }
             IonCmd::Stop => {
-                // Stop cuts a CW ID that is playing, too.
-                if self.id_on_air {
+                // Stop cuts a CW ID or a broadcast burst that is playing,
+                // and drops the broadcast queue, too.
+                if self.id_on_air || self.bcast_on_air {
                     self.id_on_air = false;
+                    self.bcast_on_air = false;
                     let _ = self.engine.send(Msg::Abort);
+                }
+                let mut dropped: BTreeMap<usize, u32> = BTreeMap::new();
+                for g in self.bcast.abort() {
+                    *dropped.entry(g).or_default() += 1;
+                }
+                for (g, n) in dropped {
+                    if let Some(p) = self.port_of(g) {
+                        self.send_host(crate::host::HostIn::GroupDropped(p, n));
+                    }
                 }
                 self.reset();
                 // Stop keys nothing, not even the ID (it goes out at the end
@@ -409,6 +479,28 @@ impl Worker {
             }
             IonCmd::NetCaps(c) => self.net_caps = c,
             IonCmd::AttachHost(h) => self.host = h,
+            IonCmd::GroupOpen(port, name) => {
+                if let Some(old) = self.ports.remove(&port) {
+                    self.bcast.close(old);
+                }
+                let g = self.bcast.open(&name);
+                self.ports.insert(port, g);
+            }
+            IonCmd::GroupClose(port) => {
+                if let Some(g) = self.ports.remove(&port) {
+                    let n = self.bcast.close(g).len() as u32;
+                    if n > 0 {
+                        self.send_host(crate::host::HostIn::GroupDropped(port, n));
+                    }
+                }
+            }
+            IonCmd::GroupSend(port, data, tag) => {
+                let sent = self.ports.get(&port).is_some_and(|&g| self.bcast.send(g, &data, tag));
+                if !sent {
+                    self.send_host(crate::host::HostIn::GroupDropped(port, 1));
+                }
+            }
+            IonCmd::GroupPersist(p) => self.bcast.set_persistence(p),
             IonCmd::SetOfdmDb(db) => {
                 self.ofdm_db = db;
                 self.node.set_ofdm_gain_db(db);
@@ -449,7 +541,7 @@ impl Worker {
             harq_recovered: st.harq_recovered,
             codewords_failed: st.codewords_failed,
             polls: st.polls,
-            on_air: self.node.on_air(),
+            on_air: self.node.on_air() || self.bcast_on_air,
             busy: self.node.busy(),
             connected_s: self.connected_at.map_or(0.0, |t| self.now() - t),
         }
@@ -477,6 +569,17 @@ impl Worker {
                     self.keyed_since_id = false;
                     continue;
                 }
+                if matches!(m, IonIn::TxDone) && self.bcast_on_air {
+                    self.bcast_on_air = false;
+                    self.bcast.on_tx_done(now);
+                    // Broadcast traffic identifies too, at least every
+                    // ID_EVERY_S while it goes on.
+                    if now - self.bcast_id_at >= ID_EVERY_S {
+                        self.bcast_id_at = now;
+                        self.id_due.get_or_insert(now);
+                    }
+                    continue;
+                }
                 match (m, self.net.as_mut()) {
                     (IonIn::Audio(samples), Some(n)) => n.push_audio(&samples, now),
                     (IonIn::TxDone, Some(n)) => n.tx_done(now),
@@ -485,9 +588,22 @@ impl Worker {
                 }
             }
             let now = self.now();
+            // The groups' bursts, as the link's receivers decoded them.
+            let ids = if self.net.is_none() {
+                self.bcast.ids()
+            } else {
+                Vec::new()
+            };
+            self.node.set_groups(&ids);
+            for inc in self.node.take_group() {
+                self.bcast.on_rx(&inc, now);
+            }
+            self.bcast.set_busy(self.node.busy());
+            self.bcast_events();
             // The CW ID when it is due and the channel is ours; nothing
             // else keys while it plays (status still goes out).
             if !self.id_on_air
+                && !self.bcast_on_air
                 && self.id_due.is_some_and(|t| now >= t)
                 && !self.node.busy()
                 && !self.net.as_ref().is_some_and(NetNode::on_air)
@@ -515,7 +631,30 @@ impl Worker {
                 }
                 continue;
             }
-            if !hold_tx && let Some(burst) = self.node.poll(now) {
+            // Broadcast only between sessions, as Data2G's host.
+            let link_idle = matches!(
+                self.node.station().state(),
+                State::Idle | State::Listening | State::Disconnected | State::Failed
+            );
+            if !hold_tx
+                && link_idle
+                && !self.bcast_on_air
+                && !self.node.on_air()
+                && let Some(b) = self.bcast.poll_tx(now)
+            {
+                let mut audio = vec![0.0; (DEFAULT_LEAD_S * SAMPLE_RATE as f64) as usize];
+                audio.extend(ion::link::audio::transmit_with(
+                    &b,
+                    ion::link::audio::ofdm_gain(self.ofdm_db),
+                ));
+                self.bcast_on_air = true;
+                self.keyed_since_id = true;
+                let _ = self.engine.send(Msg::IonTx(audio));
+            }
+            if !hold_tx
+                && !self.bcast_on_air
+                && let Some(burst) = self.node.poll(now)
+            {
                 self.keyed_since_id = true;
                 let _ = self.engine.send(Msg::IonTx(burst));
             }
