@@ -41,10 +41,10 @@ Ion keeps everything in that folder instead.
 
 | Tab | What it shows |
 |---|---|
-| Link | Each side's level and SNR report (Rpt Sent, Rpt Rcvd), Aim (the level the reports allow), Queue, Rate, Data and Time; the band meter (how clean each third of the passband is here). The centre is **Chat** (each line under its sender's call; files and pictures in the conversation with progress, a picture filling in as it arrives; drop a file on the window to send it), **Charts** (level, SNR and data over the last minutes) or **Log** (every burst sent and heard). |
+| Link | Each side's level and SNR report (Rpt Sent, Rpt Rcvd), Aim (the level the reports allow), Queue, Rate, Data and Time; the band meter (how clean each third of the passband is here). The centre is **Chat** (each line under its sender's call; files and pictures in the conversation with progress, a picture filling in as it arrives; drop a file on the window or pick one with **Browse** to send it), **Charts** (level, SNR and data over the last minutes) or **Log** (every burst sent and heard). |
 | Listen | Call and Connect; Recent; Answer (Auto: answer calls whenever no link is up; Off: receive only); Heard (stations heard calling); Band and the bursts heard lately; the log. |
 | Net | Start as NCS or Join; Open, Close net, Leave; Caps (Relay, Wide, QSY, Attended); the roster and the traffic. |
-| Setup | Station (call, grid), Radio (link type, port, model; applies on restart), Levels (drive and the OFDM level), Keying (PTT and lead time), Host (the VARA-style ports). |
+| Setup | Station (call, grid), Radio (link type, port, model, sound cards with **Rescan**; applies on restart), Levels (drive and the OFDM level), Keying (PTT, **TX audio** and lead time), Host (the VARA-style ports). |
 | Mini | A small window for running behind a Winlink client: state, SNR, level, rate, progress, Abort. |
 
 ## Files and pictures
@@ -95,8 +95,11 @@ instead of polling into it (`cw_id_breaks_do_not_cost_polls` in
 
 - TCI: Ion sets DIGU on connect. The RX filter is left to ExpertSDR3 and
   must pass 0–3000 Hz; a narrower one is reported as a problem.
-- Kenwood TS-590, TS-890 and TS-990 key with `TX1;` (DATA SEND, audio from
-  USB or ACC2). `TX;` keys Kenwood and Elecraft but is a read on Yaesu.
+- **TX audio** picks the input a CAT key takes on radios with two: Data
+  (the default) keys a Kenwood with `TX1;` (DATA SEND, audio from USB or
+  ACC2) and rigctld with `T 3` (Hamlib's data PTT); Mic keys `TX;` and
+  `T 1`. A radio that refuses the data command gets the plain one. `TX;`
+  keys Kenwood and Elecraft but is a read on Yaesu.
   Yaesu wants 2 stop bits on its older menus.
 - The 0.2 s PTT-to-RF lead (`DEFAULT_LEAD_S`) has not been measured over
   TCI; sound-card radios set the lead under Keying.

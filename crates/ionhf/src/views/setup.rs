@@ -1,7 +1,7 @@
 //! Setup: station, radio, levels, keying, host. Radio link changes apply
 //! on the next start; levels and the host apply at once.
 
-use crate::config::{Backend, PttMethod};
+use crate::config::{Backend, PttMethod, TxAudio};
 use crate::rig::{cat, civ};
 use eframe::egui::{self, Margin, RichText};
 
@@ -100,6 +100,12 @@ fn station(app: &mut App, ui: &mut egui::Ui) {
 fn radio(app: &mut App, ui: &mut egui::Ui) {
     let before = app.cfg.radio.clone();
     let before_url = app.cfg.tci_url.clone();
+    let lists = if app.cfg.radio.backend != Backend::Tci {
+        app.audio_devices().cloned().unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let mut rescan = false;
     let r = &mut app.cfg.radio;
     row(ui, "radio", |ui| {
         ui.label(RichText::new("Link").color(theme::MUTED));
@@ -162,15 +168,21 @@ fn radio(app: &mut App, ui: &mut egui::Ui) {
             Backend::None => {}
         }
         if r.backend != Backend::Tci {
-            let (ins, outs) = crate::soundcard::list_devices();
+            let (ins, outs) = &lists;
             ui.label(RichText::new("In").color(theme::MUTED));
-            device(ui, "audio_in", &mut r.audio_in, &ins);
+            device(ui, "audio_in", &mut r.audio_in, ins);
             ui.end_row();
             ui.label(RichText::new("Out").color(theme::MUTED));
-            device(ui, "audio_out", &mut r.audio_out, &outs);
+            device(ui, "audio_out", &mut r.audio_out, outs);
+            ui.end_row();
+            ui.label("");
+            rescan = ui.button("Rescan").clicked();
             ui.end_row();
         }
     });
+    if rescan {
+        app.rescan_audio_devices();
+    }
     if app.cfg.radio != before || app.cfg.tci_url != before_url {
         app.restart = true;
         app.mark_dirty();
@@ -257,6 +269,22 @@ fn keying(app: &mut App, ui: &mut egui::Ui) {
                 .show_ui(ui, |ui| {
                     for p in [PttMethod::Cat, PttMethod::Rts, PttMethod::Dtr, PttMethod::Vox] {
                         ui.selectable_value(&mut r.ptt, p, p.name());
+                    }
+                });
+        });
+        ui.end_row();
+        // Only Kenwood CAT and Hamlib tell the radio which input to key.
+        let picks_input = r.ptt == PttMethod::Cat
+            && (r.backend == Backend::Rigctld
+                || (r.backend == Backend::Cat
+                    && cat::model(&r.cat_model).is_some_and(|m| m.brand == cat::Brand::Kenwood)));
+        ui.label(RichText::new("TX audio").color(theme::MUTED));
+        ui.add_enabled_ui(picks_input, |ui| {
+            egui::ComboBox::from_id_salt("tx_audio")
+                .selected_text(r.tx_audio.name())
+                .show_ui(ui, |ui| {
+                    for a in TxAudio::ALL {
+                        ui.selectable_value(&mut r.tx_audio, a, a.name());
                     }
                 });
         });

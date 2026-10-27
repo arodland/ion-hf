@@ -153,6 +153,9 @@ pub struct App {
     pub compose: String,
     /// The Call box while it is being edited.
     pub call_draft: Option<String>,
+    /// Sound cards for Setup: read in the background (slow on some systems), once and on Rescan.
+    audio_devices: Option<(Vec<String>, Vec<String>)>,
+    audio_scan: Option<std::sync::mpsc::Receiver<(Vec<String>, Vec<String>)>>,
     pub net_text: String,
     pub net_to: String,
     /// What we announce when we start or join a net.
@@ -217,6 +220,8 @@ impl App {
             sent_bytes: 0,
             compose: String::new(),
             call_draft: None,
+            audio_devices: None,
+            audio_scan: None,
             net_text: String::new(),
             net_to: String::new(),
             net_caps: Default::default(),
@@ -478,6 +483,31 @@ impl App {
         self.cfg.ofdm_db = db;
         self.cmd(IonCmd::SetOfdmDb(db));
         self.mark_dirty();
+    }
+
+    /// The sound card lists, starting a read the first time.
+    pub fn audio_devices(&mut self) -> Option<&(Vec<String>, Vec<String>)> {
+        if let Some(rx) = &self.audio_scan
+            && let Ok(lists) = rx.try_recv()
+        {
+            self.audio_devices = Some(lists);
+            self.audio_scan = None;
+        }
+        if self.audio_devices.is_none() && self.audio_scan.is_none() {
+            self.rescan_audio_devices();
+        }
+        self.audio_devices.as_ref()
+    }
+
+    pub fn rescan_audio_devices(&mut self) {
+        if self.audio_scan.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::soundcard::list_devices());
+        });
+        self.audio_scan = Some(rx);
     }
 
     pub fn set_call(&mut self, call: String) {

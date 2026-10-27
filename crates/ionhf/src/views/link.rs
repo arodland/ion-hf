@@ -571,8 +571,17 @@ fn text(app: &mut App, ui: &mut egui::Ui, h: f32) {
                 egui::TextEdit::singleline(&mut app.file_path)
                     .hint_text("Drop a file")
                     .font(egui::TextStyle::Monospace)
-                    .desired_width(ui.available_width() - 70.0),
+                    .desired_width(ui.available_width() - 140.0),
             );
+            if ui.button("Browse").clicked()
+                && let Some(p) = rfd::FileDialog::new().pick_file()
+            {
+                if linked {
+                    app.send_file(&p);
+                } else {
+                    app.file_path = p.display().to_string();
+                }
+            }
             let path = std::path::PathBuf::from(app.file_path.trim().trim_matches('"'));
             let ok = linked && path.is_file();
             if ui.add_enabled(ok, egui::Button::new("File")).clicked() {

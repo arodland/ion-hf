@@ -16,6 +16,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use super::{ModeInfo, Rig, RigError, RigResult};
+use crate::config::TxAudio;
 
 pub const DEFAULT_ADDR: &str = "127.0.0.1:4532";
 
@@ -25,6 +26,7 @@ pub struct Rigctld {
     input: BufReader<TcpStream>,
     /// A reply was cut short: the stream is out of step and must reconnect.
     broken: bool,
+    tx_audio: TxAudio,
 }
 
 /// What to tell the user when the daemon is not there.
@@ -36,6 +38,11 @@ pub fn not_running(addr: &str) -> String {
 }
 
 impl Rigctld {
+    pub fn with_tx_audio(mut self, audio: TxAudio) -> Rigctld {
+        self.tx_audio = audio;
+        self
+    }
+
     pub fn connect(addr: &str) -> RigResult<Rigctld> {
         let sock: SocketAddr = addr
             .to_socket_addrs()
@@ -55,6 +62,7 @@ impl Rigctld {
             out,
             input,
             broken: false,
+            tx_audio: TxAudio::Data,
         })
     }
 
@@ -135,7 +143,15 @@ impl Rig for Rigctld {
             .map_err(|_| RigError::Protocol(format!("frequency {v:?}")))
     }
 
+    /// `T 3` is Hamlib's RIG_PTT_ON_DATA (the data input on a rig with
+    /// both); a rig that refuses it gets `T 1`.
     fn set_ptt(&mut self, on: bool) -> RigResult<()> {
+        if on && self.tx_audio == TxAudio::Data {
+            match self.call("T 3") {
+                Err(RigError::Rejected(_) | RigError::Unsupported) => self.tx_audio = TxAudio::Mic,
+                r => return r.map(drop),
+            }
+        }
         self.call(&format!("T {}", u8::from(on))).map(drop)
     }
 
@@ -177,9 +193,28 @@ mod tests {
         assert_eq!(m.problem(), None);
         assert!(!fake.state().ptt);
         rig.set_ptt(true).unwrap();
-        assert!(fake.state().ptt);
+        assert!(fake.state().ptt && fake.state().data_ptt);
         rig.set_ptt(false).unwrap();
         assert!(!fake.state().ptt);
+    }
+
+    #[test]
+    fn data_ptt_falls_back_to_plain_ptt() {
+        let fake = FakeRigctld::start();
+        fake.state_mut(|s| s.no_data_ptt = true);
+        let mut rig = Rigctld::connect(&fake.addr()).unwrap();
+        rig.set_ptt(true).unwrap();
+        assert!(fake.state().ptt && !fake.state().data_ptt);
+        rig.set_ptt(false).unwrap();
+        assert!(!fake.state().ptt);
+    }
+
+    #[test]
+    fn mic_ptt_is_plain_ptt() {
+        let fake = FakeRigctld::start();
+        let mut rig = Rigctld::connect(&fake.addr()).unwrap().with_tx_audio(TxAudio::Mic);
+        rig.set_ptt(true).unwrap();
+        assert!(fake.state().ptt && !fake.state().data_ptt);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //!
 //! | | Kenwood | Elecraft | Yaesu |
 //! |---|---|---|---|
-//! | PTT on / off | `TX1;` (data send) or `TX;` / `RX;` | `TX;` / `RX;` | `TX1;` / `TX0;` |
+//! | PTT on / off | `TX1;` (data send) or `TX;` (mic) / `RX;` | `TX;` / `RX;` | `TX1;` / `TX0;` |
 //! | mode | `MD;` → `MD2;` + `DA;` | `MD;` + `DT;` | `MD0;` → `MD0C;` (hex) |
 //! | filter | – | `BW;` (10 Hz units) | – |
 //! | power `PC` | watts | watts | watts |
@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::{Line, ModeInfo, Port, Rig, RigError, RigResult};
+use crate::config::TxAudio;
 
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -59,11 +60,11 @@ pub struct Model {
     pub baud: u32,
 }
 
-const fn kenwood(name: &'static str, tx: &'static str, data: bool, max: u32, baud: u32) -> Model {
+const fn kenwood(name: &'static str, data: bool, max: u32, baud: u32) -> Model {
     Model {
         name,
         brand: Brand::Kenwood,
-        tx,
+        tx: "TX;",
         data: if data { Some("DA;") } else { None },
         bw: false,
         max_watts: max,
@@ -99,12 +100,11 @@ const fn yaesu(name: &'static str, max: u32) -> Model {
 }
 
 pub const MODELS: &[Model] = &[
-    // TX1 is DATA SEND: transmit audio from USB/ACC2, not the mic.
-    kenwood("TS-590S/SG", "TX1;", true, 100, 115_200),
-    kenwood("TS-890S", "TX1;", true, 100, 115_200),
-    kenwood("TS-990S", "TX1;", true, 200, 115_200),
-    kenwood("TS-480", "TX;", false, 100, 9_600),
-    kenwood("TS-2000", "TX;", false, 100, 9_600),
+    kenwood("TS-590S/SG", true, 100, 115_200),
+    kenwood("TS-890S", true, 100, 115_200),
+    kenwood("TS-990S", true, 200, 115_200),
+    kenwood("TS-480", false, 100, 9_600),
+    kenwood("TS-2000", false, 100, 9_600),
     elecraft("K3/K3S", 100),
     elecraft("K4", 100),
     elecraft("KX3", 15),
@@ -122,8 +122,13 @@ pub fn model(name: &str) -> Option<&'static Model> {
 }
 
 impl Model {
-    pub fn ptt_on(&self) -> &'static str {
-        self.tx
+    /// On a Kenwood, `TX1;` is DATA SEND: transmit audio from USB/ACC2,
+    /// not the mic.
+    pub fn ptt_on(&self, audio: TxAudio) -> &'static str {
+        match (self.brand, audio) {
+            (Brand::Kenwood, TxAudio::Data) => "TX1;",
+            _ => self.tx,
+        }
     }
 
     pub fn ptt_off(&self) -> &'static str {
@@ -212,6 +217,7 @@ pub struct Cat {
     buf: Vec<u8>,
     no_data: bool,
     no_bw: bool,
+    tx_audio: TxAudio,
 }
 
 fn is_error(tok: &str) -> bool {
@@ -228,6 +234,7 @@ impl Cat {
             buf: Vec::new(),
             no_data: false,
             no_bw: false,
+            tx_audio: TxAudio::Data,
         };
         match cat.freq() {
             Ok(_) => Ok(cat),
@@ -237,6 +244,11 @@ impl Cat {
             ))),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn with_tx_audio(mut self, audio: TxAudio) -> Cat {
+        self.tx_audio = audio;
+        self
     }
 
     /// Next `;`-terminated token, without the `;`.
@@ -322,8 +334,18 @@ impl Rig for Cat {
     }
 
     fn set_ptt(&mut self, on: bool) -> RigResult<()> {
-        let cmd = if on { self.model.ptt_on() } else { self.model.ptt_off() };
-        self.set(cmd)
+        if !on {
+            return self.set(self.model.ptt_off());
+        }
+        let cmd = self.model.ptt_on(self.tx_audio);
+        match self.set(cmd) {
+            // A radio without DATA SEND: key it the one way it has.
+            Err(RigError::Rejected(_)) if cmd != self.model.tx => {
+                self.tx_audio = TxAudio::Mic;
+                self.set(self.model.tx)
+            }
+            r => r,
+        }
     }
 
     fn power(&mut self) -> RigResult<u32> {
@@ -406,12 +428,22 @@ mod tests {
 
             cat.set_ptt(true).unwrap();
             assert!(port.with(|e| e.ptt), "{name}");
-            if m.tx == "TX1;" && m.brand == Brand::Kenwood {
+            if m.brand == Brand::Kenwood {
                 assert!(port.with(|e| e.data_send), "{name} should key DATA SEND");
             }
             cat.set_ptt(false).unwrap();
             assert!(!port.with(|e| e.ptt), "{name}");
         }
+    }
+
+    #[test]
+    fn a_kenwood_keys_the_mic_input_when_asked() {
+        let (cat, port) = open("TS-480");
+        let mut cat = cat.with_tx_audio(TxAudio::Mic);
+        cat.set_ptt(true).unwrap();
+        assert!(port.with(|e| e.ptt && !e.data_send));
+        cat.set_ptt(false).unwrap();
+        assert!(!port.with(|e| e.ptt));
     }
 
     #[test]

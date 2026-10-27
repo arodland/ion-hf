@@ -43,7 +43,7 @@ pub fn open_rig(cfg: &RadioSettings) -> RigResult<Box<dyn Rig>> {
         }
     };
     Ok(match cfg.backend {
-        Backend::Rigctld => Box::new(Rigctld::connect(cfg.rigctld_addr.trim())?),
+        Backend::Rigctld => Box::new(Rigctld::connect(cfg.rigctld_addr.trim())?.with_tx_audio(cfg.tx_audio)),
         Backend::Icom => {
             let name = need_port()?;
             let port = SerialPort::open(&name, cfg.baud, 1)?;
@@ -54,7 +54,7 @@ pub fn open_rig(cfg: &RadioSettings) -> RigResult<Box<dyn Rig>> {
             let model = cat::model(&cfg.cat_model)
                 .ok_or_else(|| RigError::Link(format!("unknown CAT model {:?}", cfg.cat_model)))?;
             let port = SerialPort::open(&name, cfg.baud, model.stop_bits())?;
-            Box::new(Cat::new(Box::new(port), &name, model)?)
+            Box::new(Cat::new(Box::new(port), &name, model)?.with_tx_audio(cfg.tx_audio))
         }
         Backend::None => Box::new(NoRig),
         Backend::Tci => return Err(RigError::Link("TCI is not a rig-control backend".into())),

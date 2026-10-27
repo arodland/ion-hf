@@ -1,6 +1,6 @@
 [package]
 name = "ionhf"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
@@ -15,6 +15,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 ion = { path = "../ion" }
 ion-dsp = { path = "../ion-dsp" }
 log = "0.4.34"
+rfd = "0.15"
 rtrb = "0.4.0"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }

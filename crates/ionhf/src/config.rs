@@ -172,6 +172,27 @@ impl PttMethod {
     }
 }
 
+/// Which audio input a CAT or rigctld PTT keys, on radios with both.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TxAudio {
+    /// The rear data input (USB, ACC).
+    #[default]
+    Data,
+    Mic,
+}
+
+impl TxAudio {
+    pub const ALL: [TxAudio; 2] = [TxAudio::Data, TxAudio::Mic];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TxAudio::Data => "Data",
+            TxAudio::Mic => "Mic",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RadioSettings {
@@ -184,6 +205,7 @@ pub struct RadioSettings {
     /// One of `rig::cat::MODELS`.
     pub cat_model: String,
     pub ptt: PttMethod,
+    pub tx_audio: TxAudio,
     /// Empty: the CAT port.
     pub ptt_port: String,
     /// Empty: the system default.
@@ -206,6 +228,7 @@ impl Default for RadioSettings {
             civ_addr: 0x94,
             cat_model: "TS-590S/SG".into(),
             ptt: PttMethod::Cat,
+            tx_audio: TxAudio::Data,
             ptt_port: String::new(),
             audio_in: String::new(),
             audio_out: String::new(),

@@ -377,6 +377,9 @@ pub struct RigctldState {
     pub passband: u32,
     pub power: f32,
     pub no_power: bool,
+    /// The last PTT-on was `T 3` (data); with `no_data_ptt` that is refused.
+    pub data_ptt: bool,
+    pub no_data_ptt: bool,
 }
 
 /// A `rigctld` stand-in speaking the extended response protocol on
@@ -400,6 +403,8 @@ impl FakeRigctld {
             passband: 3000,
             power: 0.5,
             no_power: false,
+            data_ptt: false,
+            no_data_ptt: false,
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let conns = Arc::new(Mutex::new(Vec::new()));
@@ -475,8 +480,12 @@ fn serve(s: TcpStream, state: Arc<Mutex<RigctldState>>) {
                 _ => format!("set_freq: {hz}\nRPRT -1\n"),
             },
             ["t"] => format!("get_ptt:\nPTT: {}\nRPRT 0\n", u8::from(st.ptt)),
+            ["T", "3"] if st.no_data_ptt => "set_ptt: 3\nRPRT -11\n".to_string(),
             ["T", v] => {
-                st.ptt = *v == "1";
+                st.ptt = *v != "0";
+                if st.ptt {
+                    st.data_ptt = *v == "3";
+                }
                 format!("set_ptt: {v}\nRPRT 0\n")
             }
             ["m"] => format!("get_mode:\nMode: {}\nPassband: {}\nRPRT 0\n", st.mode, st.passband),

@@ -133,6 +133,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if args.loopback { "Ion HF (loopback)" } else { "Ion HF" })
         .with_inner_size(if cfg.mini { app::MINI_SIZE } else { app::FULL_SIZE })
+        .with_drag_and_drop(true)
         .with_min_inner_size([480.0, 320.0]);
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
