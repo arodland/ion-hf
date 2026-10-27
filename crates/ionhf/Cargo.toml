@@ -15,7 +15,6 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 ion = { path = "../ion" }
 ion-dsp = { path = "../ion-dsp" }
 log = "0.4.34"
-rfd = "0.15"
 rtrb = "0.4.0"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -32,7 +31,7 @@ name = "ionhf"
 maintainer = "Jesse Forkum <67489731+jesseforkum@users.noreply.github.com>"
 copyright = "Jesse Forkum"
 license-file = ["../../LICENSE", "0"]
-extended-description = """An adaptive HF data modem for amateur radio: an ARQ link from MFSK to 64QAM OFDM, keyboard chat, files, nets, and a VARA-style host interface for Winlink clients such as Pat."""
+extended-description = """An adaptive HF data modem for amateur radio: an ARQ link from MFSK to 64QAM OFDM and broadcast groups, behind a VARA-style host interface for Winlink clients such as Pat and group chat such as Ragtime."""
 section = "hamradio"
 priority = "optional"
 depends = "$auto"

@@ -1,8 +1,8 @@
 Ion HF (alpha)
 ==============
 
-An HF data modem for amateur radio: keyboard chat, files and pictures,
-nets, and a VARA-style port for Winlink clients (Pat, Winlink Express).
+An HF data modem for amateur radio, behind a VARA-style port for Winlink
+clients (Pat, Winlink Express) and group chat (Ragtime).
 
 Run
 ---
