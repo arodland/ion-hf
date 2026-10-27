@@ -11,10 +11,27 @@ use crate::theme;
 const NOTES: usize = 4;
 
 fn figure(ui: &mut egui::Ui, caption: &str, value: String) {
-    ui.vertical(|ui| {
+    ui.vertical_centered(|ui| {
         theme::caption(ui, caption);
         ui.label(RichText::new(value).monospace().size(16.0).strong());
     });
+}
+
+/// Caption / value pairs as one centred line.
+fn centered(ui: &mut egui::Ui, pairs: &[(&str, RichText)]) {
+    let style = ui.style().clone();
+    let mut job = egui::text::LayoutJob::default();
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        let gap = if i == 0 { "" } else { "    " };
+        for part in [
+            RichText::new(format!("{gap}{k} ")).size(11.0).color(theme::MUTED),
+            v.clone(),
+        ] {
+            part.append_to(&mut job, &style, egui::FontSelection::Default, egui::Align::Center);
+        }
+    }
+    job.halign = egui::Align::Center;
+    ui.vertical_centered(|ui| ui.label(job));
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -65,25 +82,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // The link's counts.
     if let Some(s) = &s {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let counts = [
-                ("Bursts", s.data_bursts.to_string()),
-                ("Frames", s.frames_sent.to_string()),
-                ("Resent", s.frames_resent.to_string()),
-                ("HARQ", format!("{}/{}", s.increments_sent, s.harq_recovered)),
-                ("Lost", s.codewords_failed.to_string()),
-                ("Polls", s.polls.to_string()),
-                ("Ctrl", s.control_bursts.to_string()),
-                ("Air", theme::clock(s.airtime_s)),
-                ("Allowed", format!("L{}", s.target_level)),
-            ];
-            for (k, v) in counts {
-                theme::caption(ui, k);
-                ui.label(RichText::new(v).monospace());
-                ui.add_space(6.0);
-            }
-        });
+        let counts = [
+            ("Bursts", s.data_bursts.to_string()),
+            ("Frames", s.frames_sent.to_string()),
+            ("Resent", s.frames_resent.to_string()),
+            ("HARQ", format!("{}/{}", s.increments_sent, s.harq_recovered)),
+            ("Lost", s.codewords_failed.to_string()),
+            ("Polls", s.polls.to_string()),
+            ("Ctrl", s.control_bursts.to_string()),
+            ("Air", theme::clock(s.airtime_s)),
+            ("Allowed", format!("L{}", s.target_level)),
+        ]
+        .map(|(k, v)| (k, RichText::new(v).monospace()));
+        centered(ui, &counts);
         ui.add_space(4.0);
     }
 
@@ -91,25 +102,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if let Some(s) = &s
         && !s.groups.is_empty()
     {
-        ui.horizontal_wrapped(|ui| {
-            theme::caption(ui, "Groups");
-            for g in &s.groups {
-                ui.label(RichText::new(g).monospace().color(theme::NET));
-            }
-            ui.add_space(8.0);
-            theme::caption(ui, "Heard");
-            if s.heard.is_empty() {
-                ui.label(RichText::new("—").monospace().color(theme::MUTED));
-            }
-            for (call, snr) in &s.heard {
-                ui.label(RichText::new(format!("{call} {snr:+.0}")).monospace());
-            }
-        });
+        let heard = if s.heard.is_empty() {
+            RichText::new("—").monospace().color(theme::MUTED)
+        } else {
+            let calls: Vec<String> = s.heard.iter().map(|(c, snr)| format!("{c} {snr:+.0}")).collect();
+            RichText::new(calls.join("  ")).monospace()
+        };
+        centered(
+            ui,
+            &[
+                (
+                    "Groups",
+                    RichText::new(s.groups.join("  ")).monospace().color(theme::NET),
+                ),
+                ("Heard", heard),
+            ],
+        );
         ui.add_space(4.0);
     }
 
     if let Some(s) = &s {
-        theme::caption(ui, "Band");
+        ui.vertical_centered(|ui| theme::caption(ui, "Band"));
         theme::band_meter(ui, s.band, app.band_use());
     }
 
@@ -150,13 +163,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     if app.linked() {
-        ui.horizontal(|ui| {
-            if ui.button("Disconnect").clicked() {
-                app.cmd(crate::ion_engine::IonCmd::Disconnect);
-            }
-            if ui.button(RichText::new("Abort").color(theme::BAD)).clicked() {
-                app.abort();
-            }
+        // Either side of the centre line.
+        let (mut disconnect, mut abort) = (false, false);
+        ui.columns(2, |c| {
+            c[0].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                disconnect = ui.button("Disconnect").clicked();
+            });
+            c[1].with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                abort = ui.button(RichText::new("Abort").color(theme::BAD)).clicked();
+            });
         });
+        if disconnect {
+            app.cmd(crate::ion_engine::IonCmd::Disconnect);
+        }
+        if abort {
+            app.abort();
+        }
     }
 }
