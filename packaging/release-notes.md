@@ -1,5 +1,13 @@
 **Alpha.** Ion HF has been measured in simulation but not yet proven on the air. It is released for on-air testing; expect rough edges and changes that break compatibility between versions.
 
+## New in this version
+
+- **Ion HF is now just the modem.** The window shows what the modem is doing: S/N, level, rate, the link's counts, the band (one third for a slice level, the whole band otherwise), the waterfall, the latest bursts and notes, and whether it is in an ARQ link or sending to a broadcast group. Chat, files and nets are gone from Ion; use a host program on Ion's VARA-style ports: Ragtime for chat and files, Pat or Winlink Express for Winlink.
+- **Broadcast groups** for Ragtime's group chat, as Data2G's host offers them (`BCAST OPEN`, KISS frames on port 8100).
+- **Disconnect** sends what is queued before closing (30 s at most).
+- **`ionhf --sim`** runs several Ion stations with no window and no radio, linked through a simulated HF channel, for testing host programs.
+- A host port that is busy at start no longer switches the host off in the settings.
+
 ## Download
 
 | System | File |
@@ -19,10 +27,10 @@ The builds are not signed:
 ## First run
 
 1. **Setup:** your call, then the radio link (TCI, CI-V, CAT, rigctld, or a sound card with RTS/DTR/VOX keying) and the audio devices.
-2. Try it without a radio first: start it with `--loopback` and connect to `LOOP`.
+2. Try it without a radio first: `ionhf --loopback --connect LOOP` calls a simulated station that sends back what it receives; or point a host program at Ion with `--loopback` and connect to `LOOP`.
 3. On the air, Ion sends a CW ID at the end of every link and every 9.5 minutes during one. *Esc* or *Abort* stops transmitting at any time.
 
-All stations in a test need the same Ion HF version.
+Ion answers calls on its own while no link is up. All stations in a test need the same Ion HF version.
 
 ## Report problems
 
