@@ -20,7 +20,7 @@ The builds are not signed:
 
 1. **Setup:** your call, then the radio link (TCI, CI-V, CAT, rigctld, or a sound card with RTS/DTR/VOX keying) and the audio devices.
 2. Try it without a radio first: start it with `--loopback` and connect to `LOOP`.
-3. On the air, Ion sends a CW ID at the end of every link and every 9.5 minutes during one. *Abort* stops transmitting at any time.
+3. On the air, Ion sends a CW ID at the end of every link and every 9.5 minutes during one. *Esc* or *Abort* stops transmitting at any time.
 
 All stations in a test need the same Ion HF version.
 

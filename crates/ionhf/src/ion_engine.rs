@@ -89,8 +89,13 @@ pub struct IonStatus {
     pub role: Role,
     pub peer: String,
     pub level: usize,
+    /// SNR of the last burst heard.
+    pub snr_db: Option<f32>,
     pub bytes_acked: u64,
     pub bytes_received: u64,
+    /// What we have sent, in our own bytes: acknowledged, and begun.
+    pub text_acked: u64,
+    pub text_started: u64,
     pub pending: usize,
     pub data_bursts: u32,
     pub frames_resent: u32,
@@ -252,13 +257,18 @@ impl Worker {
         if self.node.on_air() || self.net.as_ref().is_some_and(NetNode::on_air) {
             let _ = self.engine.send(Msg::Abort);
         }
+        let cut_short = self.net.is_some()
+            || !matches!(
+                self.node.station().state(),
+                State::Idle | State::Listening | State::Disconnected | State::Failed
+            );
         self.node = on_air_settings(Node::new(Node::config(&self.call), DEFAULT_LEAD_S), self.ofdm_db);
         self.net = None;
         self.connected_at = None;
         self.closing = false;
         // A link cut short still gets its ID, before anything new; one
         // already scheduled (after the peer's own) or playing stands.
-        if self.keyed_since_id && self.id_due.is_none() && !self.id_on_air {
+        if cut_short && self.keyed_since_id && self.id_due.is_none() && !self.id_on_air {
             self.id_due = Some(self.now());
         }
     }
@@ -418,8 +428,11 @@ impl Worker {
             role: s.role(),
             peer: s.peer().to_string(),
             level: s.level(),
+            snr_db: self.node.last_snr_db,
             bytes_acked: st.bytes_acked,
             bytes_received: st.bytes_received,
+            text_acked: s.text_progress().0,
+            text_started: s.text_progress().1,
             pending: s.pending(),
             data_bursts: st.data_bursts,
             frames_resent: st.frames_resent,

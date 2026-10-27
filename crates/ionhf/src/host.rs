@@ -6,7 +6,13 @@
 //! Settings that mean nothing to Ion (`BW…`, `COMPRESSION …`, `CWID …`,
 //! ...) are answered `OK`. `BUFFER n` counts bytes not yet acknowledged by
 //! the far end (Pat waits for 0 before closing); `PTT ON/OFF` is for
-//! information only, as Ion keys the radio itself.
+//! information only, as Ion keys the radio itself; `SN` gives the last S/N
+//! heard.
+//!
+//! A KISS port 200 below the command port takes a connection and drops
+//! what it is sent: clients made for Data2G's host open it alongside the
+//! command port and give up without it. Ion has no broadcast mode for it to
+//! carry.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -47,6 +53,13 @@ pub fn spawn(port: u16, ion: Sender<IonCmd>, ui: Sender<UiEvent>) -> std::io::Re
     let data = TcpListener::bind(("127.0.0.1", port + 1))?;
     cmd.set_nonblocking(true)?;
     data.set_nonblocking(true)?;
+    let kiss = port
+        .checked_sub(200)
+        .and_then(|p| TcpListener::bind(("127.0.0.1", p)).ok())
+        .filter(|l| l.set_nonblocking(true).is_ok());
+    if kiss.is_none() {
+        log::info!("Winlink host: no KISS port {}", port.saturating_sub(200));
+    }
     let (tx, rx) = crossbeam_channel::unbounded();
     let _ = ion.send(IonCmd::AttachHost(Some(tx)));
     let stop = Arc::new(AtomicBool::new(false));
@@ -54,7 +67,7 @@ pub fn spawn(port: u16, ion: Sender<IonCmd>, ui: Sender<UiEvent>) -> std::io::Re
     let thread = std::thread::Builder::new().name("winlink-host".into()).spawn(move || {
         let mut h = Host::new(ion.clone(), ui);
         while !stop2.load(Ordering::Relaxed) {
-            h.service(&cmd, &data, &rx);
+            h.service(&cmd, &data, kiss.as_ref(), &rx);
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = ion.send(IonCmd::AttachHost(None));
@@ -70,6 +83,7 @@ struct Host {
     ui: Sender<UiEvent>,
     cmd: Option<TcpStream>,
     data: Option<TcpStream>,
+    kiss: Option<TcpStream>,
     line: Vec<u8>,
     mycall: String,
     listen: bool,
@@ -81,6 +95,7 @@ struct Host {
     last_ptt: bool,
     last_busy: bool,
     last_state: Option<State>,
+    last_snr: Option<f32>,
     alive_at: Instant,
     /// Bytes from the host waiting for the data socket to accept them
     /// (and received bytes waiting for the host).
@@ -94,6 +109,7 @@ impl Host {
             ui,
             cmd: None,
             data: None,
+            kiss: None,
             line: Vec::new(),
             mycall: String::new(),
             listen: false,
@@ -103,6 +119,7 @@ impl Host {
             last_ptt: false,
             last_busy: false,
             last_state: None,
+            last_snr: None,
             alive_at: Instant::now(),
             to_host: Vec::new(),
         }
@@ -122,7 +139,13 @@ impl Host {
         }
     }
 
-    fn service(&mut self, cmd_l: &TcpListener, data_l: &TcpListener, rx: &Receiver<HostIn>) {
+    fn service(
+        &mut self,
+        cmd_l: &TcpListener,
+        data_l: &TcpListener,
+        kiss_l: Option<&TcpListener>,
+        rx: &Receiver<HostIn>,
+    ) {
         // New hosts replace old ones.
         if let Ok((s, addr)) = cmd_l.accept() {
             let _ = s.set_nonblocking(true);
@@ -135,6 +158,10 @@ impl Host {
             let _ = s.set_nonblocking(true);
             let _ = s.set_nodelay(true);
             self.data = Some(s);
+        }
+        if let Some(Ok((s, _))) = kiss_l.map(TcpListener::accept) {
+            let _ = s.set_nonblocking(true);
+            self.kiss = Some(s);
         }
         let mut buf = [0u8; 1024];
         if let Some(c) = self.cmd.as_mut() {
@@ -153,6 +180,14 @@ impl Host {
             let text = String::from_utf8_lossy(&l[..l.len() - 1]).trim().to_string();
             if !text.is_empty() {
                 self.command(&text);
+            }
+        }
+        if let Some(k) = self.kiss.as_mut() {
+            match k.read(&mut buf) {
+                Ok(0) => self.kiss = None,
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(_) => self.kiss = None,
             }
         }
         // Data from the host goes onto the link.
@@ -243,6 +278,10 @@ impl Host {
                 }
                 self.relisten();
             }
+            ["SN"] => match self.last_snr {
+                Some(s) => self.say(&format!("SN {s:.1}")),
+                None => self.say("WRONG"),
+            },
             ["VERSION"] => self.say(&format!("VERSION IonHF {}", env!("CARGO_PKG_VERSION"))),
             [w, ..]
                 if w.starts_with("BW")
@@ -267,6 +306,9 @@ impl Host {
     }
 
     fn status(&mut self, s: &IonStatus) {
+        if s.snr_db.is_some() {
+            self.last_snr = s.snr_db;
+        }
         let state = s.state;
         if self.last_state != Some(state) {
             self.last_state = Some(state);

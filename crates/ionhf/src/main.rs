@@ -16,6 +16,8 @@ mod history;
 mod host;
 mod ion_engine;
 mod ion_files;
+#[cfg(test)]
+mod pipeline_tests;
 mod radio;
 mod resample;
 mod rig;

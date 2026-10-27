@@ -72,20 +72,24 @@ this framing.
 `VERSION IonHF <version>`. Settings that mean nothing to Ion (`BW…`,
 `COMPRESSION …`, `CWID …`) are answered `OK`. `BUFFER n` counts bytes the
 far end has not yet acknowledged (Pat waits for 0 before closing).
-`PTT ON/OFF` is for information only: Ion keys the radio itself.
+`PTT ON/OFF` is for information only: Ion keys the radio itself. `SN`
+gives the S/N of the last burst heard. A KISS port 200 below the command
+port accepts a connection and discards what it is sent, for clients that
+open it alongside the command port.
 
 ## On the air
 
 Connect, Answer (when called), and net Start, Join and Close all key the
 radio. Answer is on by default: with a call set, Ion answers a station
-that calls it. Turn Answer off to receive only. Abort stops a link.
+that calls it. Turn Answer off to receive only. Abort (Esc) stops a link
+without transmitting.
 
 **Identification.** Ion sends a CW ID at least every 570 s during a link
 and once at its end (§97.119). The station that did not close the link
-waits for the other's CW ID plus 1.5 s before it transmits. The link's CW
-sense (`CwSense` in `crates/ion/src/link/node.rs`) hears an ID reliably to
-about −6 dB in 3 kHz; below that an ID may cost the peer one poll
-(`cw_id_breaks_do_not_cost_polls` in `crates/ion/tests/node.rs`).
+waits for the other's CW ID plus 1.5 s before it transmits. Both ends time
+the mid-link IDs from the same instant, so each waits out the other's ID
+instead of polling into it (`cw_id_breaks_do_not_cost_polls` in
+`crates/ion/tests/node.rs`).
 
 **Radio notes.**
 

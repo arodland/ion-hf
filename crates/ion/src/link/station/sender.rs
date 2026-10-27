@@ -1,12 +1,21 @@
 //! Sending side: ACKs in, data bursts out.
 
-use super::{Awaiting, Incoming, MAX_FRAMES, Outgoing, Sent, State, Station, TINY_ALL, WINDOW_BYTES, user_bits};
+use super::{
+    Awaiting, Incoming, MAX_FRAMES, Outgoing, Sent, State, Station, TINY, TINY_ALL, WINDOW_BYTES, top_level_in,
+    user_bits,
+};
 use crate::level::{FLOOR, FrameSize, Guard, LADDER, Wave};
 use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
 use crate::link::harq;
 
 impl Station {
     pub(super) fn sender_rx(&mut self, inc: &Incoming, tiny: Option<Tiny>, frames: &[Option<Frame>], now: f64) {
+        let eff = inc.chan.eff_snr_db;
+        self.heard_peer_db = Some(if self.cfg.eff_snr && eff.is_finite() {
+            eff
+        } else {
+            inc.snr_db
+        });
         if let Some(t) = tiny {
             match (t, self.awaiting) {
                 (
@@ -18,6 +27,8 @@ impl Station {
                     },
                     Awaiting::ConnAck,
                 ) => {
+                    self.last_progress = now;
+                    self.link_t0 = Some(now - self.air.duration(inc.wave, TINY, 0));
                     self.state = State::Connected;
                     self.clear_wait();
                     self.agree(self.cfg.compress && compress);
@@ -49,7 +60,6 @@ impl Station {
                     },
                     Awaiting::Ack,
                 ) => {
-                    self.peer_wants_turn = want_turn;
                     self.peer_wants_disc = want_disc;
                     self.peer_class = class;
                     self.peer_slot = slot;
@@ -60,6 +70,10 @@ impl Station {
                         && self.last_burst.len() > TINY_ACK_FRAMES
                         && u64::from(bitmap) == TINY_ALL;
                     let bitmap = if all { u64::MAX } else { bitmap as u64 };
+                    self.note_turn_ask(want_turn, now);
+                    self.peer_heard = Some(burst);
+                    self.peer_ack_wave = Some(inc.wave);
+                    self.last_progress = now;
                     self.on_ack(burst, bitmap, stored, snr_db, now);
                     self.clear_wait();
                 }
@@ -67,11 +81,38 @@ impl Station {
                     self.clear_wait();
                     self.state = State::Disconnected;
                 }
+                // Unasked: the peer has something to send, or wants out.
+                (
+                    Tiny::Ack {
+                        burst,
+                        want_turn,
+                        want_disc,
+                        ..
+                    },
+                    Awaiting::Nothing,
+                ) => {
+                    self.note_turn_ask(want_turn, now);
+                    self.peer_wants_disc = want_disc;
+                    self.peer_heard = Some(burst);
+                }
                 // They want to close too: acknowledge and finish.
                 (Tiny::DiscReq, _) => {
                     self.clear_wait();
                     self.reply = Some(self.tiny(Tiny::DiscAck, inc.wave));
                     self.close_after_tx = true;
+                }
+                // A Turn while we already send: the peer never heard us take
+                // over. Our burst is lost; send again now, no faster than
+                // the Turn reached us.
+                (Tiny::Turn { snr_db }, _) => {
+                    let report = snr_db.unwrap_or(inc.snr_db);
+                    if !self.last_burst.is_empty() {
+                        self.on_ack(self.burst_id.wrapping_add(1) & 3, 0, false, report, now);
+                    }
+                    self.level = self.level.min(top_level_in(inc.wave));
+                    self.burst_s = self.cfg.max_burst_s;
+                    self.clear_wait();
+                    self.last_tx_end = f64::NEG_INFINITY;
                 }
                 _ => {}
             }
@@ -79,10 +120,19 @@ impl Station {
         }
         for f in frames.iter().flatten() {
             if f.kind == Kind::Ack
+                && self.awaiting == Awaiting::Nothing
+                && let Some(a) = AckInfo::from_bytes(&f.payload)
+            {
+                self.note_turn_ask(f.flags & flags::WANT_TURN != 0, now);
+                self.peer_wants_disc = f.flags & flags::WANT_DISC != 0;
+                self.peer_heard = Some(a.burst);
+                continue;
+            }
+            if f.kind == Kind::Ack
                 && self.awaiting == Awaiting::Ack
                 && let Some(a) = AckInfo::from_bytes(&f.payload)
             {
-                self.peer_wants_turn = f.flags & flags::WANT_TURN != 0;
+                self.note_turn_ask(f.flags & flags::WANT_TURN != 0, now);
                 self.peer_wants_disc = f.flags & flags::WANT_DISC != 0;
                 let stored = f.flags & flags::STORED != 0;
                 let snr = match a.report {
@@ -91,10 +141,21 @@ impl Station {
                 };
                 self.peer_class = a.report.map(|r| r.class).unwrap_or_default();
                 self.peer_slot = a.report.map_or(0, |r| r.slot);
+                self.peer_ack_wave = Some(inc.wave);
+                self.peer_heard = Some(a.burst);
+                self.last_progress = now;
                 self.on_ack(a.burst, a.bitmap, stored, snr, now);
                 self.clear_wait();
             }
         }
+    }
+
+    /// The peer asks for the turn (or no longer does).
+    fn note_turn_ask(&mut self, want: bool, now: f64) {
+        if want && !self.peer_wants_turn {
+            self.turn_asked_at = now;
+        }
+        self.peer_wants_turn = want;
     }
 
     /// Applies the peer's ACK for the burst just sent: delivered frames
@@ -193,6 +254,9 @@ impl Station {
             in_flight += n;
         }
         self.burst_id = (self.burst_id + 1) & 3;
+        if Some(self.burst_id) == self.peer_heard {
+            self.burst_id = (self.burst_id + 1) & 3;
+        }
         let n = parity.len() + pieces.len();
         let mut frames = Vec::with_capacity(n);
         let mut spans = Vec::with_capacity(n);

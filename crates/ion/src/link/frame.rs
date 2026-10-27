@@ -213,8 +213,12 @@ pub enum Tiny {
     },
     /// "Repeat your last ACK."
     Poll,
-    /// "Your turn to send."
-    Turn,
+    /// "Your turn to send." With how well the giver hears the taker: the
+    /// taker's own direction, which on a lopsided link differs from the way
+    /// back (`None`: not reported).
+    Turn {
+        snr_db: Option<f32>,
+    },
     /// "Still here, nothing to send."
     Idle,
     DiscReq,
@@ -225,6 +229,8 @@ pub enum Tiny {
 pub const TINY_ACK_FRAMES: usize = 6;
 
 impl Tiny {
+    pub const CONN_ACK_KIND: u8 = 2;
+
     /// (kind, extra): 4 + 16 bits. A tiny ACK's kind carries the class,
     /// the HARQ flag and the slot, as plain / HARQ stored: 1 / 8 clear at
     /// the centre slot, 9 / 12 echo, 10 / 13 Doppler (echo and Doppler
@@ -273,7 +279,7 @@ impl Tiny {
                     | ((slot as u16).min(2) & 3) << 9,
             ),
             Tiny::Poll => (3, 0),
-            Tiny::Turn => (4, 0),
+            Tiny::Turn { snr_db } => (4, snr_db.map_or(0, |s| 1 << 6 | snr_q(s, 6) as u16)),
             Tiny::Idle => (5, 0),
             Tiny::DiscReq => (6, 0),
             Tiny::DiscAck => (7, 0),
@@ -309,7 +315,9 @@ impl Tiny {
                 },
             },
             3 => Tiny::Poll,
-            4 => Tiny::Turn,
+            4 => Tiny::Turn {
+                snr_db: (extra >> 6 & 1 == 1).then(|| snr_from_q((extra & 0x3F) as u32)),
+            },
             5 => Tiny::Idle,
             6 => Tiny::DiscReq,
             7 => Tiny::DiscAck,
@@ -426,7 +434,9 @@ mod tests {
                 slot: 2,
             },
             Tiny::Poll,
-            Tiny::Turn,
+            Tiny::Turn { snr_db: None },
+            Tiny::Turn { snr_db: Some(-7.0) },
+            Tiny::Turn { snr_db: Some(21.0) },
             Tiny::Idle,
             Tiny::DiscReq,
             Tiny::DiscAck,

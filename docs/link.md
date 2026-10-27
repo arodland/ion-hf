@@ -113,8 +113,9 @@ burst's `user` word plus a 16-bit `extra`, for messages that must get
 through at the floor in a fraction of a second: the tiny ACK (burst number
 mod 4, a bitmap of up to 6 frames, the SNR, the turn and disconnect
 wishes, the HARQ flag, the channel class and the slice slot), the ConnAck,
-Poll ("repeat your last ACK"), Turn ("your turn to send"), Idle ("still
-here, nothing to send"), DiscReq and DiscAck.
+Poll ("repeat your last ACK"), Turn ("your turn to send", with the SNR
+at which the giver hears the taker), Idle ("still here, nothing to
+send"), DiscReq and DiscAck.
 
 ## ACKs
 
@@ -285,25 +286,39 @@ lost whatever the SNR, and a slice can move clear of it.
 
 ## Turn-over, idle and disconnect
 
-- The receiving side asks for the turn with a flag in its ACKs. When the
-  sender has nothing left in flight it sends Turn; the new sender starts
-  where the peer was getting through, capped by what it hears itself (the
-  channel is the same both ways), with a first burst no longer than
-  `max_burst_s`. With nothing queued, it checks in at once so the peer sees
-  it took over.
+- The receiving side asks for the turn with a flag in its ACKs; with
+  something queued and the channel quiet for 4 s, it sends an ACK unasked
+  (again every 10 s). When the sender has nothing left in flight, or
+  `break_in_s` (20 s) after the ask with data still queued, it sends Turn
+  with the SNR it hears the peer at. The new sender starts at the level
+  that report allows (its own direction: on a lopsided link the way back
+  differs), with a first burst no longer than `max_burst_s`. With nothing
+  queued, it checks in at once so the peer sees it took over. A Poll from
+  the new sender also counts as the turn taken; a Turn heard while sending
+  means our burst was lost, and it goes again no faster than the Turn.
+- Polls, Turns and goodbyes that go unanswered are repeated in the same
+  waveform, then one more robust, then the floor; in the floor at once
+  after 45 s without progress. After a poll, the receiving side's ACKs go
+  no faster than the poll and one rung below the lost ACK, for a run of
+  bursts that doubles each time the way back fails again; the sender waits
+  for an ACK in the slowest waveform the last one came in.
 - A sender with nothing to send checks in with an Idle every `idle_s`
-  (10 s). Nothing heard for `link_timeout_s` (120 s) ends the link.
-- Either side can ask to disconnect (a flag in the ACKs, or the sender's
-  own wish); once nothing is left in flight the sender sends DiscReq and
-  the other side answers DiscAck. The goodbye gets `retries` tries.
+  (10 s). No progress (nothing acknowledged, delivered or handed over) for
+  `link_timeout_s` (120 s) ends the link.
+- Either side can ask to disconnect (a flag in the ACKs); once nothing is
+  left in flight the sender sends DiscReq and the other side answers
+  DiscAck. `Station::disconnect` drops what is still queued and sends
+  DiscReq at once; the goodbye gets `disc_retries` tries, then the link
+  closes anyway.
 
 ## CW ID
 
-`Node` hears a CW ID on the Ion centre with `CwSense`: per 20 ms, the
-strongest of three bins about the centre against six well clear of it (a
-burst fills them all alike, a keyed tone only the first). It hears an ID
-reliably to about −6 dB in 3 kHz; below that an ID may cost the peer one
-wasted poll. Ion HF sends the ID itself ([app.md](app.md)).
+`Node` keys a mid-link CW ID ahead of its first burst after each ID
+period, timed from the link's ID clock (`Station::link_t0`: when the
+answering station keyed the ConnAck the caller heard), which both ends
+keep. A wait for an answer is stretched by the length of the peer's ID
+when an ID time has passed since the peer last keyed. Ion HF sends the
+end-of-link ID itself ([app.md](app.md)).
 
 ## Compression
 
@@ -332,8 +347,9 @@ HF leaves compression off on links; nets compress direct messages
 | `turnaround_s` | 0.3 s | from the end of the peer's burst to our audio |
 | `max_burst_s` / `max_burst_long_s` | 8 s / 32 s | burst length |
 | `margin_db` | −1 dB | over each level's threshold |
-| `retries`, `reply_slack_s` | 6, 1 s | the call, the goodbye and the turn |
-| `idle_s`, `link_timeout_s` | 10 s, 120 s | |
+| `retries`, `disc_retries` | 6, 3 | the call and the turn; the goodbye |
+| `reply_slack_s` | 2 s | beyond an answer's expected end |
+| `idle_s`, `break_in_s`, `link_timeout_s` | 10 s, 20 s, 120 s | |
 | `loss_hold_s`, `fail_hold_s`, `fail_hold_max_s` | 15 s, 30 s, 480 s | |
 | `harq` | on | |
 | `pick_family`, `eff_snr` | on, on | channel report |

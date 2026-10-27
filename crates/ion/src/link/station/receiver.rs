@@ -1,6 +1,6 @@
 //! Receiving side: data bursts in, ACKs out.
 
-use super::{Incoming, Outgoing, Role, Station, TINY, TINY_ALL, user_hi};
+use super::{FLOOR_WAVE, Incoming, Outgoing, Role, STALL_S, Station, TINY, TINY_ALL, more_robust, user_hi, wave_down};
 use crate::level::{FrameSize, Guard, LADDER, Wave};
 use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
 use crate::link::harq;
@@ -22,7 +22,7 @@ pub fn cheap_ack_waves(data: Wave) -> &'static [(Wave, f32)] {
 }
 
 /// Data bursts a poll turns `cheap_ack_margin_db` off for.
-const CHEAP_ACK_OFF_BURSTS: u8 = 8;
+pub(super) const CHEAP_ACK_OFF_BURSTS: u8 = 8;
 
 impl Station {
     pub(super) fn receiver_rx(&mut self, inc: &Incoming, tiny: Option<Tiny>, frames: &[Option<Frame>], now: f64) {
@@ -35,6 +35,7 @@ impl Station {
                 self.chan.class(),
             ));
             self.rx_level = inc.code;
+            self.last_progress = now;
             let long = LADDER[inc.code].frame == FrameSize::Long;
             let combined;
             let frames = match &inc.soft {
@@ -83,26 +84,44 @@ impl Station {
             if ack.code == TINY {
                 ack.wave = self.ack_wave(inc.wave, inc.snr_db);
             }
+            ack.wave = self.capped_ack_wave(ack.wave, now);
             self.cheap_ack_off = self.cheap_ack_off.saturating_sub(1);
+            if self.cheap_ack_off == 0 {
+                self.ack_cap = None;
+            }
             self.reply = Some(ack);
             return;
         }
         match tiny {
             Some(Tiny::Poll | Tiny::Idle) => {
                 // A poll: our ACK was lost. Answer in the poll's waveform,
-                // and no cheap ACK waveform for a while.
+                // and keep the ACKs to it for a while (longer each time the
+                // way back fails again).
                 if tiny == Some(Tiny::Poll) {
-                    self.cheap_ack_off = CHEAP_ACK_OFF_BURSTS;
+                    if self.cheap_ack_off == 0 {
+                        self.ack_cap_bursts = self.ack_cap_bursts.saturating_mul(2).min(64);
+                    }
+                    self.cheap_ack_off = self.ack_cap_bursts;
+                    // The next ACK a rung more robust than the lost one, and
+                    // no faster than the poll (on a lopsided link the poll
+                    // may come much faster).
+                    let down = more_robust(wave_down(self.last_tx_wave), inc.wave);
+                    self.ack_cap = Some(self.ack_cap.map_or(down, |c| more_robust(c, down)));
+                } else {
+                    self.last_progress = now;
                 }
-                self.reply = Some(self.ack_burst(inc.wave));
+                let wave = self.capped_ack_wave(inc.wave, now);
+                self.reply = Some(self.ack_burst(wave));
             }
-            Some(Tiny::Turn) => {
+            Some(Tiny::Turn { snr_db: report }) => {
+                self.last_progress = now;
                 // Our turn to send: start where the peer was getting
                 // through, capped by what we hear. With nothing queued,
                 // check in at once so the peer sees we took over.
                 self.role = Role::Sender;
                 self.harq.clear();
                 self.at_peer.clear();
+                self.peer_heard = None;
                 // The channel is the same both ways: our own class, and
                 // the lower of the Turn's SNR and the last data burst's.
                 self.peer_class = self.chan.class();
@@ -111,9 +130,17 @@ impl Station {
                     Some(e) if self.cfg.eff_snr => e.min(rep),
                     _ => rep,
                 };
+                // The peer's report of how it hears us is our own direction;
+                // without one, the channel is taken to be the same both ways.
+                let snr = report.unwrap_or(snr);
                 self.target = self.level_for(snr - self.air_db(self.rx_level));
-                self.level = self.usable_below(self.rx_level.min(self.target), now);
+                let start = match report {
+                    Some(r) => self.level_for(r - self.air_db(self.rx_level) - self.cfg.start_margin_db.unwrap_or(0.0)),
+                    None => self.rx_level,
+                };
+                self.level = self.usable_below(start.min(self.target).min(self.cfg.max_level), now);
                 self.peer_wants_turn = false;
+                self.heard_peer_db = None;
                 // The first burst after a turn is never longer than
                 // `max_burst_s`: the peer's TurnTaken wait counts on it.
                 self.burst_s = self.cfg.max_burst_s;
@@ -236,9 +263,21 @@ impl Station {
             .unwrap_or(data)
     }
 
-    fn ack_burst(&self, wave: Wave) -> Outgoing {
+    /// `w` no faster than the cap a poll set, and the floor once the link
+    /// has stalled.
+    pub(super) fn capped_ack_wave(&self, w: Wave, now: f64) -> Wave {
+        if now - self.last_progress > STALL_S {
+            return FLOOR_WAVE;
+        }
+        match self.ack_cap.filter(|_| self.cheap_ack_off > 0) {
+            Some(cap) => more_robust(w, cap),
+            None => w,
+        }
+    }
+
+    pub(super) fn ack_burst(&self, wave: Wave) -> Outgoing {
         let (burst, bitmap, n, stored) = self.last_ack;
-        let want_turn = !self.out.is_empty();
+        let want_turn = self.has_data();
         let want_disc = self.want_disc;
         let all = n <= harq::MAX_SLOTS && bitmap == u64::MAX >> (64 - n.max(1));
         let all_tiny = self.cfg.tiny_ack_all && n > TINY_ACK_FRAMES && all && !stored;

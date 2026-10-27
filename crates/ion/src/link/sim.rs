@@ -99,6 +99,8 @@ pub struct ModelMedium {
     pub knee_db: f32,
     /// Anything to this station index is lost entirely (nobody there).
     pub deaf: Option<usize>,
+    /// Added to the SNR of what each station sends, dB: a lopsided link.
+    pub dir_db: [f32; 2],
     /// From this time on, the mean SNR is this instead: a band that dies.
     pub drop_at: Option<(f64, f32)>,
     /// Delay span (ms) and Doppler spread (Hz) the receivers measure on
@@ -118,6 +120,7 @@ impl ModelMedium {
             thresholds_db: crate::level::thresholds_db(),
             knee_db: 2.0,
             deaf: None,
+            dir_db: [0.0; 2],
             drop_at: None,
             spreads: None,
             noise: NoiseGen::new(seed),
@@ -178,7 +181,7 @@ impl Medium for ModelMedium {
         if self.deaf == Some(1 - from) {
             return None;
         }
-        let snr = self.snr_at(start);
+        let snr = self.snr_at(start) + self.dir_db[from];
         let control_th = control_threshold_db(burst.wave);
         // The header is a little more robust than a control frame.
         if self.noise.uniform() > self.p_ok(control_th - 1.0, snr) {

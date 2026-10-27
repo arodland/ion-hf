@@ -18,13 +18,19 @@ pub struct Config {
     /// and with HARQ each costs a fraction of a frame.
     pub margin_db: f32,
     pub max_level: usize,
-    /// Tries for the call, the goodbye and the turn.
+    /// Tries for the call and the turn.
     pub retries: u32,
-    /// Extra wait for an answer beyond the expected time.
+    /// Tries for the goodbye before closing anyway.
+    pub disc_retries: u32,
+    /// Wait for an answer this long beyond its expected end, then ask again.
     pub reply_slack_s: f64,
     /// Sending side with nothing to send: check in this often.
     pub idle_s: f64,
-    /// Nothing heard for this long: the link is gone.
+    /// Sending side asked for the turn: hand it over within this long, with
+    /// data still queued (it goes once the peer is done).
+    pub break_in_s: f64,
+    /// No progress for this long (nothing acknowledged, delivered or handed
+    /// over, however much is heard): the link is gone.
     pub link_timeout_s: f64,
     /// A level that lost a whole burst is not tried again for this long,
     /// doubled for each further failure (a fast-fading channel kills the
@@ -142,8 +148,10 @@ impl Config {
             margin_db: -1.0,
             max_level: LADDER.len() - 1,
             retries: 6,
-            reply_slack_s: 1.0,
+            disc_retries: 3,
+            reply_slack_s: 2.0,
             idle_s: 10.0,
+            break_in_s: 20.0,
             link_timeout_s: 120.0,
             fail_hold_s: 30.0,
             fail_hold_max_s: 480.0,

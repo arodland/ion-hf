@@ -60,7 +60,12 @@ pub struct NetLine {
 /// One entry of the chat: a line of text, or a file (an index into
 /// [`App::files`]).
 pub enum Chat {
-    Text { sent: bool, text: String },
+    /// `ends_at`: for a line we sent, our bytes sent through its end.
+    Text {
+        sent: bool,
+        text: String,
+        ends_at: u64,
+    },
     File(usize),
 }
 
@@ -316,11 +321,12 @@ impl App {
         }
         let mut line = text.trim_end().to_string();
         line.push('\n');
+        self.sent_bytes += line.len() as u64;
         self.chat.push(Chat::Text {
             sent: true,
             text: line.clone(),
+            ends_at: self.sent_bytes,
         });
-        self.sent_bytes += line.len() as u64;
         self.cmd(IonCmd::Send(line.into_bytes()));
     }
 
@@ -365,10 +371,12 @@ impl App {
                         Some(Chat::Text {
                             sent: false,
                             text: last,
+                            ..
                         }) if !last.ends_with('\n') => last.push_str(line),
                         _ => self.chat.push(Chat::Text {
                             sent: false,
                             text: line.to_string(),
+                            ends_at: 0,
                         }),
                     }
                 }
@@ -509,7 +517,7 @@ impl App {
                     self.last_state = s.state;
                 }
                 self.hist.on_status(&s);
-                self.sent_progress(s.bytes_acked);
+                self.sent_progress(s.text_acked);
                 if s.state == State::Connected {
                     self.hist.heard_peer(&s.peer.clone(), self.hist.last_here);
                 }
@@ -775,6 +783,9 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.abort();
+        }
         // A file dropped on the window: send it on a link, else hold it.
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw

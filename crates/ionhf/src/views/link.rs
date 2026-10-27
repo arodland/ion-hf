@@ -526,11 +526,20 @@ fn text(app: &mut App, ui: &mut egui::Ui, h: f32) {
                 }
                 for c in &app.chat {
                     match c {
-                        crate::app::Chat::Text { sent, text } => {
+                        crate::app::Chat::Text { sent, text, ends_at } => {
                             let (who, c) = if *sent { (&me, theme::US) } else { (&them, theme::PEER) };
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(who.as_str()).monospace().strong().size(15.0).color(c));
                                 ui.label(RichText::new(text.trim_end()).size(15.0).color(theme::TEXT));
+                                if *sent {
+                                    let start = ends_at - text.len() as u64;
+                                    let (mark, color) = match &app.link {
+                                        Some(s) if s.text_acked >= *ends_at => ("✓", theme::OK),
+                                        Some(s) if s.text_started > start => ("sending", theme::WARN),
+                                        _ => ("queued", theme::MUTED),
+                                    };
+                                    ui.label(RichText::new(mark).size(12.0).color(color));
+                                }
                             });
                             ui.add_space(2.0);
                         }
