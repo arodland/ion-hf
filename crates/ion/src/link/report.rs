@@ -26,6 +26,12 @@ pub use crate::chan::{DOPPLER_HZ, ECHO_MS};
 /// Weight of the newest burst in the receiver's running channel average.
 const SMOOTH: f32 = 0.5;
 
+/// Bursts in a row without a Doppler measurement after which the Doppler
+/// spread is forgotten. The fast-fading class keeps the link on MFSK, which
+/// measures none, so without this one bad OFDM estimate would hold the
+/// link there for good; forgotten, the next OFDM burst measures again.
+const DOPPLER_MEMORY: u32 = 4;
+
 /// The two class bits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChanClass {
@@ -56,6 +62,7 @@ pub struct ChanTrack {
     delay_ms: Option<f32>,
     doppler_hz: Option<f32>,
     eff_snr_db: Option<f32>,
+    since_doppler: u32,
 }
 
 impl ChanTrack {
@@ -73,6 +80,14 @@ impl ChanTrack {
         };
         self.delay_ms = mix(self.delay_ms, m.delay_ms);
         self.doppler_hz = mix(self.doppler_hz, m.doppler_hz);
+        if m.doppler_hz.is_finite() {
+            self.since_doppler = 0;
+        } else {
+            self.since_doppler += 1;
+            if self.since_doppler >= DOPPLER_MEMORY {
+                self.doppler_hz = None;
+            }
+        }
         if m.eff_snr_db.is_finite() {
             self.eff_snr_db = Some(m.eff_snr_db);
         }
@@ -142,5 +157,26 @@ impl ChanReport {
                 s => s,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_fading_class_clears_after_bursts_without_doppler() {
+        let mut t = ChanTrack::default();
+        t.add(&ChannelMeas {
+            doppler_hz: 32.0,
+            ..ChannelMeas::default()
+        });
+        assert!(t.class().doppler);
+        for _ in 1..DOPPLER_MEMORY {
+            t.add(&ChannelMeas::default());
+            assert!(t.class().doppler);
+        }
+        t.add(&ChannelMeas::default());
+        assert!(!t.class().doppler);
     }
 }
