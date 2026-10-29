@@ -53,7 +53,14 @@ pub struct RxBurst {
     pub chan: ChannelMeas,
     /// How the data symbols were sent (from the header).
     pub mode: DataMode,
+    /// Equalised data symbols at the constellation's unit points (despread
+    /// in the low-PAPR mode), at most [`EQ_MAX`], evenly over the burst:
+    /// for a decode plot.
+    pub eq: Vec<Complex>,
 }
+
+/// Most equalised symbols an [`RxBurst`] keeps.
+pub const EQ_MAX: usize = 1000;
 
 /// Receiver counters.
 #[doc(hidden)]

@@ -88,6 +88,12 @@ impl Constellation {
             Constellation::Qam64 => qam64(),
         }
     }
+
+    /// The points at unit mean energy, as [`RxBurst::eq`] holds them.
+    pub fn unit_points(self) -> Vec<ion_dsp::dsp::Complex> {
+        let p = self.points();
+        p.pts[..p.count()].to_vec()
+    }
 }
 
 /// OFDM numerology: carrier spacing, cyclic prefix, width and everything

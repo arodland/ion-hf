@@ -364,6 +364,60 @@ fn ofdm_len(b: &phy::RxBurst) -> u64 {
     phy::burst_samples_with(b.numerology, pilots, b.constellation, b.llrs.len()) as u64
 }
 
+/// What a received burst's data looked like to the receiver, for a decode
+/// plot; at most [`PLOT_MAX`] points, evenly over the burst.
+#[derive(Clone, Debug)]
+pub enum RxPlot {
+    /// OFDM: the equalised data symbols (`phy::RxBurst::eq`) and the
+    /// constellation they were sent in.
+    Iq {
+        constellation: Constellation,
+        symbols: Vec<ion_dsp::dsp::Complex>,
+    },
+    /// MFSK, as Data2G plots its tones: per data symbol, 1 less the second
+    /// likeliest value's share and the likeliest value's share (of the
+    /// symbol's 32), from the tone metrics.
+    Tones(Vec<[f32; 2]>),
+}
+
+pub const PLOT_MAX: usize = 1000;
+
+fn ofdm_plot(b: &phy::RxBurst) -> Option<RxPlot> {
+    (!b.eq.is_empty()).then(|| RxPlot::Iq {
+        constellation: b.constellation,
+        symbols: b.eq.clone(),
+    })
+}
+
+fn mfsk_plot(b: &MfskBurst) -> Option<RxPlot> {
+    // R0 and R1 both send one tone of 32 values a symbol.
+    const VALS: usize = 32;
+    let n = b.metrics.len() / VALS;
+    if n == 0 {
+        return None;
+    }
+    let shares = b
+        .metrics
+        .chunks_exact(VALS)
+        .step_by(n.div_ceil(PLOT_MAX))
+        .map(|m| {
+            let (mut top, mut second, mut sum) = (0f32, 0f32, 0f32);
+            for &l in m {
+                let p = l.exp();
+                sum += p;
+                if p > top {
+                    second = top;
+                    top = p;
+                } else if p > second {
+                    second = p;
+                }
+            }
+            [1.0 - second / sum, top / sum]
+        })
+        .collect();
+    Some(RxPlot::Tones(shares))
+}
+
 /// Every receiver at once, on the same audio: the full-band OFDM guards,
 /// the slice in each of the three thirds of the passband
 /// ([`crate::slots`]), MFSK, and the slot meter.
@@ -380,6 +434,10 @@ pub struct Receivers {
     meter: SlotMeter,
     /// The meter's pick, stamped on every burst heard.
     slot: u8,
+    /// Decode plots are wanted ([`Receivers::set_plot`]); those of the
+    /// last [`Receivers::process`], in its bursts' order.
+    plot: bool,
+    plots: Vec<Option<RxPlot>>,
 }
 
 /// How old the meter's frames are before they count: a burst decoded at
@@ -401,6 +459,8 @@ impl Receivers {
             mfsk_out: Vec::new(),
             meter: SlotMeter::new(CENTER_HZ, AUDIO_RATE, METER_LAG_S),
             slot: 0,
+            plot: false,
+            plots: Vec::new(),
         }
     }
 
@@ -447,6 +507,22 @@ impl Receivers {
         let slot = self.slot;
         out.extend(self.ofdm_out.iter().map(|b| Incoming { slot, ..decode(b) }));
         out.extend(self.mfsk_out.iter().map(|b| Incoming { slot, ..decode_mfsk(b) }));
+        self.plots.clear();
+        if self.plot {
+            self.plots.extend(self.ofdm_out.iter().map(ofdm_plot));
+            self.plots.extend(self.mfsk_out.iter().map(mfsk_plot));
+        }
+    }
+
+    /// Make decode plots of the bursts heard (off by default).
+    pub fn set_plot(&mut self, on: bool) {
+        self.plot = on;
+    }
+
+    /// The decode plots of the bursts the last [`Receivers::process`]
+    /// appended, in order (none while plots are off).
+    pub fn take_plots(&mut self) -> Vec<Option<RxPlot>> {
+        std::mem::take(&mut self.plots)
     }
 
     /// [`Receivers::process`], with each burst's place in the audio and
