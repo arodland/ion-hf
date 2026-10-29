@@ -1,0 +1,76 @@
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running tests\ionos.rs (target\release\deps\ionos-8d7cbdd3c691c64a.exe)
+
+running 1 test
+WGN -6 dB seed 1: 3916 B, 783 B/min
+WGN -6 dB seed 0: 3916 B, 783 B/min
+MPP -6 dB seed 1: 2260 B, 452 B/min
+MPG -6 dB seed 1: 1968 B, 394 B/min
+MPP -6 dB seed 0: 2100 B, 420 B/min
+MPG -6 dB seed 0: 1758 B, 352 B/min
+test ionos_table has been running for over 60 seconds
+MPD -6 dB seed 1: 1990 B, 398 B/min
+MPD -6 dB seed 0: 1946 B, 389 B/min
+WGN -3 dB seed 0: 3622 B, 724 B/min
+WGN -3 dB seed 1: 3396 B, 679 B/min
+MPG -3 dB seed 1: 2146 B, 429 B/min
+MPG -3 dB seed 0: 1624 B, 325 B/min
+MPP -3 dB seed 1: 2676 B, 535 B/min
+MPP -3 dB seed 0: 2868 B, 574 B/min
+WGN +0 dB seed 0: 6970 B, 1394 B/min
+MPD -3 dB seed 0: 2616 B, 523 B/min
+MPD -3 dB seed 1: 2522 B, 504 B/min
+WGN +0 dB seed 1: 8160 B, 1632 B/min
+MPP +0 dB seed 1: 5320 B, 1064 B/min
+MPG +0 dB seed 0: 3960 B, 792 B/min
+MPG +0 dB seed 1: 4404 B, 881 B/min
+MPP +0 dB seed 0: 3448 B, 690 B/min
+MPD +0 dB seed 0: 2306 B, 461 B/min
+MPD +0 dB seed 1: 3092 B, 618 B/min
+MPG +3 dB seed 0: 8254 B, 1651 B/min
+MPG +3 dB seed 1: 21080 B, 4216 B/min
+WGN +3 dB seed 0: 34680 B, 6936 B/min
+WGN +3 dB seed 1: 34680 B, 6936 B/min
+MPP +3 dB seed 0: 19210 B, 3842 B/min
+MPP +3 dB seed 1: 19890 B, 3978 B/min
+MPD +3 dB seed 0: 4848 B, 970 B/min
+MPG +6 dB seed 0: 32300 B, 6460 B/min
+WGN +6 dB seed 1: 51170 B, 10234 B/min
+WGN +6 dB seed 0: 53550 B, 10710 B/min
+MPD +3 dB seed 1: 7398 B, 1480 B/min
+MPG +6 dB seed 1: 32640 B, 6528 B/min
+MPP +6 dB seed 0: 33150 B, 6630 B/min
+MPP +6 dB seed 1: 30090 B, 6018 B/min
+MPD +6 dB seed 1: 4080 B, 816 B/min
+WGN +10 dB seed 0: 73100 B, 14620 B/min
+MPD +6 dB seed 0: 14280 B, 2856 B/min
+WGN +10 dB seed 1: 73100 B, 14620 B/min
+MPG +10 dB seed 1: 46750 B, 9350 B/min
+MPG +10 dB seed 0: 51850 B, 10370 B/min
+MPP +10 dB seed 0: 53890 B, 10778 B/min
+MPP +10 dB seed 1: 56950 B, 11390 B/min
+WGN +20 dB seed 1: 162860 B, 32572 B/min
+WGN +20 dB seed 0: 162860 B, 32572 B/min
+MPD +10 dB seed 0: 15980 B, 3196 B/min
+MPD +10 dB seed 1: 23460 B, 4692 B/min
+MPG +20 dB seed 0: 125120 B, 25024 B/min
+MPG +20 dB seed 1: 108460 B, 21692 B/min
+MPP +20 dB seed 1: 145350 B, 29070 B/min
+MPP +20 dB seed 0: 142120 B, 28424 B/min
+MPD +20 dB seed 0: 20400 B, 4080 B/min
+MPD +20 dB seed 1: 36040 B, 7208 B/min
+
+Ion on IONOS SIM, 2 paths, S:N in 3 kHz against a sine at each burst's peak; 5 min per run, bytes/min (bit/s):
+| S:N dB | WGN | MPG | MPP | MPD |
+|---:|---:|---:|---:|---:|
+| 20 | 32572 (4343) | 23358 (3114) | 28747 (3833) | 5644 (753) |
+| 10 | 14620 (1949) | 9860 (1315) | 11084 (1478) | 3944 (526) |
+| 6 | 10472 (1396) | 6494 (866) | 6324 (843) | 1836 (245) |
+| 3 | 6936 (925) | 2933 (391) | 3910 (521) | 1225 (163) |
+| 0 | 1513 (202) | 836 (112) | 877 (117) | 540 (72) |
+| -3 | 702 (94) | 377 (50) | 554 (74) | 514 (69) |
+| -6 | 783 (104) | 373 (50) | 436 (58) | 394 (52) |
+test ionos_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 491.77s
+

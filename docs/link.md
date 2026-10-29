@@ -396,7 +396,9 @@ side has asked for them. Tiny ACKs carry a bitmap and a report, too many
 values to list. Nothing is expected outside a link: a call comes in
 MFSK. A Normal receiver gets about 190 headers (`tests/expect.rs`, which also checks
 that every slow, short data burst and tiny burst of a running link was in
-the set). `Config::expect_headers` (on) turns it off.
+the set). `Config::expect_headers` (on) turns it off. A cued burst
+takes its header from the cue, and a partial HARQ burst is useless
+without its cue's count, so neither layout is listed for it.
 
 ## Slice placement
 
