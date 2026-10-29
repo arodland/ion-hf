@@ -11,7 +11,7 @@ top. It drives the radio over TCI
 ```text
 ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
       [--setup] [--log] [--shots DIR] [--quit S]
-      [--panel a|b] [--size WxH] [--shot-set NAME --shot-at S]
+      [--size WxH] [--shot-set NAME --shot-at S]
 ```
 
 - `--loopback`: no radio; simulated stations answer (below). `--loop-snr`
@@ -25,13 +25,10 @@ ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
 - `--size WxH`: the window at so many pixels, one point to a pixel
   whatever the display's scaling (the saved window size is left alone).
 - `--shot-set NAME --shot-at S` (with `--shots`): instead of the 15 s
-  shots, one set `S` seconds in: each lamp style at 1280x720 and
-  1920x1080, saved as `A_NAME_1280.png` and so on.
+  shots, one set `S` seconds in, at 1280x720 and 1920x1080, saved as
+  `NAME_1280.png` and `NAME_1920.png`.
   `lab_runs/ui/capture.sh` takes the whole set in loopback, driven through
   the host ports by `lab_runs/ui/drive.py`.
-- `--panel a|b`: the lamp style while both are on trial: (a) annunciator
-  lenses with the legend inside, (b) indicator dots with the legend
-  beside them. The header says which.
 
 ## Settings
 
@@ -64,8 +61,10 @@ search) to `logs/saved-<UTC time>.txt`; **Folder** opens `logs/`.
 
 ### Lamps
 
-Lit in the colour of what they mean; an unlit lamp's legend stays
-readable, and a lit one's changes too, so colour is never the only cue.
+Annunciators: a lens with its legend in it, lit from behind in the
+colour of what it means, the legend then dark on the lit lens. An unlit
+lens stays dark with its legend dim but readable, so colour is never the
+only cue.
 Only WARN does anything when clicked (the Log, errors only).
 
 | Lamp | Lit |

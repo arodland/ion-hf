@@ -3,40 +3,11 @@
 
 use std::sync::OnceLock;
 
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2,
-};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use ion::level::{Guard, LADDER, Wave};
 use ion::phy_mfsk::MfskMode;
 
 use crate::theme;
-
-/// How lamps are drawn, while both are on trial (`--panel a|b`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Style {
-    /// Annunciator: a lens with the legend in it, lit from behind.
-    #[default]
-    A,
-    /// Indicator: a dot with the legend beside it.
-    B,
-}
-
-impl Style {
-    pub fn parse(s: &str) -> Option<Style> {
-        match s.to_ascii_lowercase().as_str() {
-            "a" => Some(Style::A),
-            "b" => Some(Style::B),
-            _ => None,
-        }
-    }
-
-    pub fn letter(self) -> &'static str {
-        match self {
-            Style::A => "A",
-            Style::B => "B",
-        }
-    }
-}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Lit {
@@ -88,58 +59,30 @@ fn glow(p: &egui::Painter, r: Rect, c: Color32, round: f32, s: f32) {
     p.add(shadow.as_shape(r, CornerRadius::same(round as u8)));
 }
 
-/// One lamp in `r`.
-fn paint(p: &egui::Painter, r: Rect, style: Style, lamp: &Lamp, s: f32, hovered: bool) {
-    let font = FontId::monospace(12.0 * s);
-    match style {
-        Style::A => {
-            let round = 2.0;
-            let (fill, edge, ink) = match lamp.lit {
-                Lit::Off => (dark(theme::MUTED), theme::LINE, dim_ink()),
-                Lit::Armed(c) => (
-                    dark(c),
-                    c.lerp_to_gamma(theme::BG, 0.45),
-                    c.lerp_to_gamma(theme::BG, 0.2),
-                ),
-                Lit::On(c) => {
-                    glow(p, r, c, round, s);
-                    (c.lerp_to_gamma(theme::BG, 0.12), c, theme::BG)
-                }
-            };
-            let edge = if hovered { theme::TEXT } else { edge };
-            p.rect(r, round, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
-            p.text(r.center(), Align2::CENTER_CENTER, lamp.legend, font, ink);
+/// One annunciator in `r`: a lens with its legend, lit from behind.
+fn paint(p: &egui::Painter, r: Rect, lamp: &Lamp, s: f32, hovered: bool) {
+    let round = 2.0;
+    let (fill, edge, ink) = match lamp.lit {
+        Lit::Off => (dark(theme::MUTED), theme::LINE, dim_ink()),
+        Lit::Armed(c) => (
+            dark(c),
+            c.lerp_to_gamma(theme::BG, 0.45),
+            c.lerp_to_gamma(theme::BG, 0.2),
+        ),
+        Lit::On(c) => {
+            glow(p, r, c, round, s);
+            (c.lerp_to_gamma(theme::BG, 0.12), c, theme::BG)
         }
-        Style::B => {
-            let rad = 5.0 * s;
-            let c0 = pos2(r.min.x + rad + 3.0 * s, r.center().y);
-            match lamp.lit {
-                Lit::Off => {
-                    p.circle(c0, rad, dark(theme::MUTED), Stroke::new(1.0, theme::LINE));
-                }
-                Lit::Armed(c) => {
-                    p.circle(c0, rad, dark(c), Stroke::new(1.5, c.lerp_to_gamma(theme::BG, 0.3)));
-                }
-                Lit::On(c) => {
-                    glow(p, Rect::from_center_size(c0, Vec2::splat(2.0 * rad)), c, rad, s);
-                    p.circle(c0, rad, c, Stroke::new(1.0, c.lerp_to_gamma(Color32::WHITE, 0.4)));
-                }
-            }
-            let ink = match lamp.lit {
-                Lit::Off => dim_ink(),
-                Lit::Armed(_) => theme::MUTED,
-                Lit::On(_) => theme::TEXT,
-            };
-            let ink = if hovered { theme::TEXT } else { ink };
-            p.text(
-                pos2(c0.x + rad + 6.0 * s, r.center().y),
-                Align2::LEFT_CENTER,
-                lamp.legend,
-                font,
-                ink,
-            );
-        }
-    }
+    };
+    let edge = if hovered { theme::TEXT } else { edge };
+    p.rect(r, round, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        lamp.legend,
+        FontId::monospace(12.0 * s),
+        ink,
+    );
 }
 
 /// Lamp rows, each row sharing `width` evenly; `gap_before` puts extra
@@ -147,7 +90,6 @@ fn paint(p: &egui::Painter, r: Rect, style: Style, lamp: &Lamp, s: f32, hovered:
 /// legend.
 pub fn block(
     ui: &mut egui::Ui,
-    style: Style,
     rows: &[&[Lamp]],
     width: f32,
     s: f32,
@@ -176,7 +118,7 @@ pub fn block(
                 }
                 resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             }
-            paint(ui.painter(), r, style, lamp, s, hovered);
+            paint(ui.painter(), r, lamp, s, hovered);
         }
         y += h + gap;
     }

@@ -82,7 +82,7 @@ fn lamps(app: &mut App, ui: &mut egui::Ui, width: f32, s: f32) {
         let c = if sending { theme::US } else { theme::PEER };
         Lamp::on(f, family == Some(f), c)
     });
-    if panel::block(ui, app.panel, &[&row1, &row2, &row3], width, s, Some(2)) == Some("WARN") {
+    if panel::block(ui, &[&row1, &row2, &row3], width, s, Some(2)) == Some("WARN") {
         app.logbook.show_errors();
         app.log_view = true;
     }

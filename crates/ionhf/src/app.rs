@@ -14,7 +14,6 @@ use crate::engine::{Msg, Status, UiEvent};
 use crate::history::History;
 use crate::ion_engine::{IonCmd, IonEvent, IonHandle, IonStatus};
 use crate::logbook::{Kind, Logbook};
-use crate::panel::Style;
 use crate::plot::Plots;
 use crate::radio::{LoopCmd, RadioInfo, RadioThread};
 use crate::waterfall::{Band, Cursor, Waterfall};
@@ -57,9 +56,6 @@ pub struct App {
     pub bcast_level: Option<usize>,
     /// The Log fills the window below the panel.
     pub log_view: bool,
-    pub panel: Style,
-    /// `--panel` was given: the header says which style.
-    pub panel_trial: bool,
     /// The Call box while it is being edited.
     pub call_draft: Option<String>,
     /// Sound cards for Setup: read in the background (slow on some systems), once and on Rescan.
@@ -101,7 +97,7 @@ pub struct Flash {
 }
 
 enum ShotStep {
-    Set(Style, [f32; 2]),
+    Size([f32; 2]),
     Shoot(String),
 }
 
@@ -139,8 +135,6 @@ impl App {
             host_client: false,
             bcast_level: None,
             log_view: false,
-            panel: Style::default(),
-            panel_trial: false,
             call_draft: None,
             audio_devices: None,
             audio_scan: None,
@@ -454,15 +448,6 @@ impl App {
                     self.log_view = !(self.log_view && !self.setup);
                     self.setup = false;
                 }
-                if self.panel_trial {
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("PANEL {}", self.panel.letter()))
-                            .monospace()
-                            .strong()
-                            .color(theme::WARN),
-                    );
-                }
             });
         });
     }
@@ -499,25 +484,19 @@ impl App {
             self.size_pixels(ctx, px);
         }
         if let Some((name, at)) = self.shot_set.take() {
-            // Each style at each size, a second and a half to settle.
+            // Each size, a second and a half to settle.
             let mut when = at;
-            for style in [Style::A, Style::B] {
-                for px in [[1280.0, 720.0], [1920.0, 1080.0]] {
-                    self.shot_steps.push((when, ShotStep::Set(style, px)));
-                    let file = format!("{}_{name}_{}.png", style.letter(), px[0] as u32);
-                    self.shot_steps.push((when + 1.5, ShotStep::Shoot(file)));
-                    when += 2.0;
-                }
+            for px in [[1280.0, 720.0], [1920.0, 1080.0]] {
+                self.shot_steps.push((when, ShotStep::Size(px)));
+                let file = format!("{name}_{}.png", px[0] as u32);
+                self.shot_steps.push((when + 1.5, ShotStep::Shoot(file)));
+                when += 2.0;
             }
             self.next_shot = f64::INFINITY;
         }
         while self.shot_steps.first().is_some_and(|(at, _)| t >= *at) {
             match self.shot_steps.remove(0).1 {
-                ShotStep::Set(style, px) => {
-                    self.panel = style;
-                    self.panel_trial = true;
-                    self.size_pixels(ctx, px);
-                }
+                ShotStep::Size(px) => self.size_pixels(ctx, px),
                 ShotStep::Shoot(file) => {
                     if let Some(dir) = &self.shots {
                         shoot(ctx, dir.join(file));

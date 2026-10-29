@@ -3,7 +3,7 @@
 //!
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
 //! [--setup] [--log] [--shots DIR] [--quit S] [--loop-snr DB]
-//! [--panel a|b] [--size WxH] [--shot-set NAME --shot-at S]
+//! [--size WxH] [--shot-set NAME --shot-at S]
 //! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
@@ -50,12 +50,10 @@ struct Args {
     loop_snr: Option<f32>,
     /// Open on the log.
     log: bool,
-    /// The lamp style, while both are on trial.
-    panel: Option<panel::Style>,
     /// Window size in pixels (screenshots); the saved size is left alone.
     size: Option<[f32; 2]>,
-    /// With `shots`: one set of screenshots `shot_at` seconds in, in every
-    /// lamp style at 1280x720 and 1920x1080, named after `shot_set`.
+    /// With `shots`: one set of screenshots `shot_at` seconds in, at
+    /// 1280x720 and 1920x1080, named after `shot_set`.
     shot_set: Option<String>,
     shot_at: Option<f64>,
 }
@@ -70,7 +68,6 @@ fn parse_args() -> Args {
         quit: None,
         loop_snr: None,
         log: false,
-        panel: None,
         size: None,
         shot_set: None,
         shot_at: None,
@@ -86,7 +83,6 @@ fn parse_args() -> Args {
             "--quit" => args.quit = it.next().and_then(|v| v.parse().ok()),
             "--loop-snr" => args.loop_snr = it.next().and_then(|v| v.parse().ok()),
             "--log" => args.log = true,
-            "--panel" => args.panel = it.next().and_then(|v| panel::Style::parse(&v)),
             "--size" => {
                 args.size = it.next().and_then(|v| {
                     let (w, h) = v.split_once('x')?;
@@ -251,10 +247,6 @@ fn main() -> eframe::Result {
             }
             app.setup |= args.setup;
             app.log_view |= args.log;
-            if let Some(style) = args.panel {
-                app.panel = style;
-                app.panel_trial = true;
-            }
             app.shots = args.shots.as_ref().map(std::path::PathBuf::from);
             app.shot_set = args.shot_set.zip(args.shot_at);
             app.pixel_size = args.size;
