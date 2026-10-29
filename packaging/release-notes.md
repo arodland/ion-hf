@@ -2,11 +2,12 @@
 
 ## New in this version
 
-- **Ion HF is now just the modem.** The window shows what the modem is doing: S/N, level, rate, the link's counts, the band (one third for a slice level, the whole band otherwise), the waterfall, the latest bursts and notes, and whether it is in an ARQ link or sending to a broadcast group. Chat, files and nets are gone from Ion; use a host program on Ion's VARA-style ports: Ragtime for chat and files, Pat or Winlink Express for Winlink.
-- **Broadcast groups** for Ragtime's group chat, as Data2G's host offers them (`BCAST OPEN`, KISS frames on port 8100).
-- **Disconnect** sends what is queued before closing (30 s at most).
-- **`ionhf --sim`** runs several Ion stations with no window and no radio, linked through a simulated HF channel, for testing host programs.
-- A host port that is busy at start no longer switches the host off in the settings.
+- **Faster on fading paths.** In simulation against alpha.4: about 2× at +3 dB on most channels (6× on a gentle fading path), 1.4–1.7× at 0 dB, and up to 7× on fast-fading (MPD) paths, where alpha.4 barely got through.
+- **Level choice by throughput.** The sender picks each burst's level by the throughput it expects, not one rung at a time. `gear = "ladder"` in `ionhf.toml` (or `--gear ladder`) brings back alpha.4's way, for comparing on the air.
+- **MFSK cue below +7 dB.** Weak OFDM bursts go out behind a short MFSK cue that carries their header, so the receiver finds them. It is used only when both stations are alpha.5 or later, and it is no louder than Ion's other MFSK.
+- **Better receiver.** Echoes near the end of the guard interval no longer break the timing; a second decoding pass recovers more of each OFDM burst; damaged headers are matched against the ones the link expects next.
+- **New window.** Backlit annunciators for TX, RX, link, CW ID, host, radio, ARQ/broadcast, HARQ, retries, losses and warnings, and for the waveform on the air; the level as a readout and a 17-step strip; a decode plot of the last bursts heard; a full log with filters, search, Copy, Save and Folder, kept in `logs/ionhf.log` in the settings folder.
+- New options: `--log` (open on the Log), `--gear goodput|ladder`.
 
 ## Download
 

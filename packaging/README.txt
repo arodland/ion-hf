@@ -22,7 +22,8 @@ answers calls).
 
 Settings
 --------
-ionhf.toml, with window.ron (the window) and ion.log (the log):
+ionhf.toml, with window.ron (the window), ion.log (diagnostics) and
+logs/ (what the Log shows):
   Windows  %APPDATA%\Ion HF
   macOS    ~/Library/Application Support/Ion HF
   Linux    ~/.config/ionhf
