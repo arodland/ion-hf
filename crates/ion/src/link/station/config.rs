@@ -168,9 +168,10 @@ pub enum Gear {
     Ladder,
 }
 
-/// Default [`Config::cue_below_db`]: about where the OFDM data header
-/// starts to miss bursts on a fading channel.
-pub const CUE_BELOW_DB: f32 = 6.0;
+/// Default [`Config::cue_below_db`]: IONOS S:N about +9 dB, where the
+/// OFDM data header still misses bursts on the fading channels
+/// (`docs/experiments/next-link.md`, the cue rule).
+pub const CUE_BELOW_DB: f32 = 7.0;
 
 /// Default [`Config::skip_slices_from`]: one past the first long-guard
 /// level.

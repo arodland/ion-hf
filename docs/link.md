@@ -320,8 +320,8 @@ the OFDM header (and from about −2 dB the preamble check) fails, while the
 data with HARQ could still get through. On a link that agreed to
 `caps::CUE` (`Config::cue`, on), a full-band OFDM data burst (normal or
 long guard) goes out behind an **MFSK cue** while the SNR the gear aims by
-is below `cue_below_db` (6 dB; above it the OFDM header is heard anyway
-and the cue only costs air time):
+is below `cue_below_db` (7 dB, IONOS S:N about +9 dB; above it the OFDM
+header is heard anyway and the cue only costs air time):
 
 ```text
 | MFSK R1 cue: preamble 16 × 28 ms, header 48 × 14 ms | OFDM burst as without it |
@@ -460,7 +460,7 @@ HF leaves compression off on links; nets compress direct messages
 | `compress` | off | |
 | `gear` | `Goodput` | `Ladder`: the alpha.4 rule |
 | `harq_stretch`, `merge_pieces` | on, on | |
-| `cue`, `cue_below_db`, `harq_partial` | on, 6 dB, on | MFSK cue |
+| `cue`, `cue_below_db`, `harq_partial` | on, 7 dB, on | MFSK cue |
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
 `ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_GEAR=ladder`,
