@@ -4,7 +4,7 @@
 //! own IONOS channel, with noise.
 //!
 //! ionhf --sim [--stations 2] [--ionos MPG] [--paths 2] [--snr 10[,DB...]]
-//!   [--port 8300] [--calls N0AAA,N0BBB] [--seed 1]
+//!   [--port 8300] [--calls N0AAA,N0BBB] [--seed 1] [--gear goodput|ladder]
 //!
 //! Station `i` listens on `port + 10·i` (data one above, KISS 200 below).
 //! `--snr` is what each station hears, in station order (the last value
@@ -37,6 +37,7 @@ struct Opts {
     port: u16,
     calls: Vec<String>,
     seed: u64,
+    gear: crate::config::Gear,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -48,6 +49,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         port: 8300,
         calls: Vec::new(),
         seed: 1,
+        gear: crate::config::Gear::default(),
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -73,6 +75,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--port" => o.port = val()?.parse().map_err(|_| "--port")?,
             "--calls" => o.calls = val()?.split(',').map(|s| s.trim().to_ascii_uppercase()).collect(),
             "--seed" => o.seed = val()?.parse().map_err(|_| "--seed")?,
+            "--gear" => o.gear = crate::config::Gear::parse(val()?).ok_or("--gear: goodput or ladder")?,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -149,6 +152,7 @@ pub fn run(args: &[String]) {
         let port = o.port + 10 * i as u16;
 
         let ion = ion_engine::spawn(call, msg_tx.clone(), ui_tx.clone(), Box::new(|| {}));
+        let _ = ion.cmds.send(ion_engine::IonCmd::SetGear(o.gear.link()));
         let engine = Engine::new(
             rx_cons,
             tx_prod,

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use ion::link::bcast::{BcastConfig, BcastEvent, BcastStation};
 use ion::link::node::{DEFAULT_LEAD_S, NodeAir};
-use ion::link::{Air, Node, Role, State};
+use ion::link::{Air, Gear, Node, Role, State};
 
 use crate::engine::{Msg, SAMPLE_RATE, UiEvent};
 
@@ -49,6 +49,9 @@ pub enum IonCmd {
     Stop,
     /// Extra level for OFDM bursts on the air, dB (0 to 3).
     SetOfdmDb(f32),
+    /// The link's choice of level, from the next link on (at once while
+    /// none is up).
+    SetGear(Gear),
     /// A Winlink host interface takes the link's received bytes and status
     /// (`None`: it has gone).
     AttachHost(Option<Sender<crate::host::HostIn>>),
@@ -123,7 +126,10 @@ pub struct IonHandle {
 
 /// Our own station's node, with OFDM at the on-air level (the loopback test
 /// stations stay at 0 dB).
-fn on_air_settings(mut n: Node, ofdm_db: f32) -> Node {
+fn on_air_node(call: &str, gear: Gear, ofdm_db: f32) -> Node {
+    let mut cfg = Node::config(call);
+    cfg.gear = gear;
+    let mut n = Node::new(cfg, DEFAULT_LEAD_S);
     n.set_ofdm_gain_db(ofdm_db);
     n.set_id_every(Some(ID_EVERY_S));
     n
@@ -147,6 +153,7 @@ struct Worker {
     node: Node,
     /// Extra level for our OFDM bursts, dB.
     ofdm_db: f32,
+    gear: Gear,
     /// A Winlink host (Pat, Winlink Express) driving the link.
     host: Option<Sender<crate::host::HostIn>>,
     call: String,
@@ -178,11 +185,9 @@ impl Worker {
     fn new(call: String, engine: Sender<Msg>, ui: Sender<UiEvent>, repaint: Box<dyn Fn() + Send>) -> Self {
         let bcast_call = call.clone();
         Self {
-            node: on_air_settings(
-                Node::new(Node::config(&call), DEFAULT_LEAD_S),
-                ion::link::audio::OFDM_AIR_GAIN_DB,
-            ),
+            node: on_air_node(&call, Gear::default(), ion::link::audio::OFDM_AIR_GAIN_DB),
             ofdm_db: ion::link::audio::OFDM_AIR_GAIN_DB,
+            gear: Gear::default(),
             host: None,
             call,
             engine,
@@ -279,7 +284,7 @@ impl Worker {
             self.node.station().state(),
             State::Idle | State::Listening | State::Disconnected | State::Failed
         );
-        self.node = on_air_settings(Node::new(Node::config(&self.call), DEFAULT_LEAD_S), self.ofdm_db);
+        self.node = on_air_node(&self.call, self.gear, self.ofdm_db);
         self.connected_at = None;
         self.closing = false;
         // A link cut short still gets its ID, before anything new; one
@@ -377,6 +382,17 @@ impl Worker {
             IonCmd::SetOfdmDb(db) => {
                 self.ofdm_db = db;
                 self.node.set_ofdm_gain_db(db);
+            }
+            IonCmd::SetGear(g) => {
+                self.gear = g;
+                match self.node.station().state() {
+                    State::Idle | State::Disconnected | State::Failed => self.reset(),
+                    State::Listening => {
+                        self.reset();
+                        self.node.station_mut().listen();
+                    }
+                    _ => {}
+                }
             }
         }
     }

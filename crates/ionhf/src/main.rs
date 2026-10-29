@@ -2,7 +2,7 @@
 //! Express) on VARA-style host ports and KISS.
 //!
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
-//! [--setup] [--shots DIR] [--quit S] [--loop-snr DB]
+//! [--setup] [--shots DIR] [--quit S] [--loop-snr DB] [--gear goodput|ladder]
 //! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
@@ -44,6 +44,8 @@ struct Args {
     quit: Option<f64>,
     /// Loopback only: the simulated channel's SNR, dB.
     loop_snr: Option<f32>,
+    /// The link's gear for this run, over the setting.
+    gear: Option<config::Gear>,
 }
 
 fn parse_args() -> Args {
@@ -55,6 +57,7 @@ fn parse_args() -> Args {
         shots: None,
         quit: None,
         loop_snr: None,
+        gear: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -66,6 +69,10 @@ fn parse_args() -> Args {
             "--shots" => args.shots = it.next(),
             "--quit" => args.quit = it.next().and_then(|v| v.parse().ok()),
             "--loop-snr" => args.loop_snr = it.next().and_then(|v| v.parse().ok()),
+            "--gear" => match it.next().as_deref().and_then(config::Gear::parse) {
+                Some(g) => args.gear = Some(g),
+                None => eprintln!("--gear: goodput or ladder"),
+            },
             "-h" | "--help" => {
                 println!("ionhf [--loopback] [--tci ws://127.0.0.1:50001] [--connect CALL] [--setup]");
                 std::process::exit(0);
@@ -215,6 +222,9 @@ fn main() -> eframe::Result {
                 && let Some(lb) = app.threads.radio.ctl.loopback()
             {
                 let _ = lb.send(crate::radio::LoopCmd::SnrDb(db));
+            }
+            if let Some(g) = args.gear {
+                let _ = app.threads.ion.cmds.send(ion_engine::IonCmd::SetGear(g.link()));
             }
             if let Some(call) = &args.connect {
                 app.connect(call);

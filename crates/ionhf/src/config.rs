@@ -22,6 +22,8 @@ pub struct Config {
     pub drive: u32,
     /// OFDM level above the single-tone signals, 0 to 3 dB.
     pub ofdm_db: f32,
+    /// How the link picks its level (`ion::link::Gear`).
+    pub gear: Gear,
     pub host_enabled: bool,
     /// Command port; data is the next one up.
     pub host_port: u16,
@@ -43,6 +45,7 @@ impl Default for Config {
             net: String::new(),
             drive: 50,
             ofdm_db: ion::link::audio::OFDM_AIR_GAIN_DB,
+            gear: Gear::Goodput,
             host_enabled: false,
             host_port: 8300,
             tci_url: "ws://127.0.0.1:50001".into(),
@@ -109,6 +112,34 @@ impl Config {
         match self.tci_sample_rate {
             12_000 | 24_000 => self.tci_sample_rate,
             _ => 48_000,
+        }
+    }
+}
+
+/// `gear` in `ionhf.toml` and `--gear`: the link's choice of level.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Gear {
+    /// By expected throughput.
+    #[default]
+    Goodput,
+    /// Up and down the ladder, as Ion HF 0.1.0-alpha.4 (for an A/B).
+    Ladder,
+}
+
+impl Gear {
+    pub fn parse(s: &str) -> Option<Gear> {
+        match s.to_ascii_lowercase().as_str() {
+            "goodput" => Some(Gear::Goodput),
+            "ladder" => Some(Gear::Ladder),
+            _ => None,
+        }
+    }
+
+    pub fn link(self) -> ion::link::Gear {
+        match self {
+            Gear::Goodput => ion::link::Gear::Goodput,
+            Gear::Ladder => ion::link::Gear::Ladder,
         }
     }
 }
@@ -260,5 +291,8 @@ mod tests {
         assert_eq!(c.tci_url, "ws://127.0.0.1:50001");
         assert_eq!(c.radio.backend, Backend::Cat);
         assert_eq!(c.radio.rigctld_addr, "127.0.0.1:4532");
+        assert_eq!(c.gear, Gear::Goodput);
+        let c: Config = toml::from_str("gear = \"ladder\"\n").unwrap();
+        assert_eq!(c.gear, Gear::Ladder);
     }
 }
