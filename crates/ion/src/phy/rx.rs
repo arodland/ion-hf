@@ -925,7 +925,9 @@ impl PhyRx {
         let (first, last) = (paths[0].0, paths[paths.len() - 1].0);
         let cands = (last - cp).min(s0)..=first.max(s0);
         let cmin = cands.clone().map(cost).fold(f32::INFINITY, f32::min);
-        if !self.legacy_timing && cost(s0) > cmin + 3.0 {
+        // A burst taken on its cue below the preamble threshold has a lag
+        // profile of noise: it keeps the plateau window.
+        if !self.legacy_timing && !weak_b && cost(s0) > cmin + 3.0 {
             let s = cands
                 .filter(|&s| cost(s) <= cmin + 1.0)
                 .min_by_key(|&s| (s - s0).abs())
