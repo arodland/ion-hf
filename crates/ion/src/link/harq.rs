@@ -216,7 +216,9 @@ impl HarqRx {
         };
         let total = old.len();
         let mut old = old;
-        if field > 0 && !old.is_empty() {
+        // A field naming none, or more than is stored (nothing, say): the
+        // layout is not ours.
+        if field > 0 {
             let p = field as usize - 1;
             if p == 0 || p > old.len() {
                 for e in old {
@@ -399,5 +401,14 @@ mod tests {
         );
         assert!(!r.stored && rx.is_empty());
         assert_eq!(partial_field(4, 4), 0);
+        // Against an empty store, a partial burst of a sender that counts
+        // three stored has matching check bits but is still refused.
+        let r = rx.receive_partial(
+            level,
+            burst_check_bits(3, partial_field(1, 3)),
+            partial_field(1, 3),
+            &Soft::Model(vec![lost(1, start(slot), inc), lost(6, 0, slot)]),
+        );
+        assert!(!r.stored && rx.is_empty());
     }
 }

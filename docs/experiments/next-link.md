@@ -167,7 +167,8 @@ column), incompressible payload, 6 threads. B/min, WGN / MPG / MPP / MPD.
 ```text
 # sweep (about 5 min each on 6 threads)
 ION_IONOS_MODES=WGN,MPG,MPP ION_SNRS=0,3,6,10 bash lab_runs/next-link/run.sh sweep_cue7 ION_CUE_DB=7
-# sessions (about 10 min each)
+# sessions (about 10 min each); the baseline from its own worktree:
+#   git worktree add --detach ../ion-hf-base befad71
 ION_TREE=../ion-hf-base CARGO_TARGET_DIR=../ion-hf-base/target bash lab_runs/next-link/run.sh full_alpha4
 bash lab_runs/next-link/run.sh full_next
 bash lab_runs/next-link/run.sh full_ladder ION_GEAR=ladder
