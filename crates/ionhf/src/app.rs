@@ -50,7 +50,7 @@ pub struct App {
     /// Decode plots asked of the Ion worker.
     plot_on: bool,
     /// Until when (seconds since start) each activity lamp stays lit.
-    pub lit_until: Lit,
+    pub lit_until: Flash,
     /// A host program is connected to the command port.
     pub host_client: bool,
     /// The level of our last broadcast burst.
@@ -83,6 +83,8 @@ pub struct App {
     pub pixel_size: Option<[f32; 2]>,
     /// The zoom `--size` sets is not saved.
     sized: bool,
+    /// A widget (a text box) had the keyboard at the end of the last frame.
+    had_focus: bool,
     shot_steps: Vec<(f64, ShotStep)>,
     started: Instant,
     next_shot: f64,
@@ -90,7 +92,7 @@ pub struct App {
 
 /// Seconds since start until which each activity lamp stays lit.
 #[derive(Default)]
-pub struct Lit {
+pub struct Flash {
     pub harq: f64,
     pub retry: f64,
     pub lost: f64,
@@ -133,7 +135,7 @@ impl App {
             logbook: Logbook::new(),
             plots: Plots::default(),
             plot_on: false,
-            lit_until: Lit::default(),
+            lit_until: Flash::default(),
             host_client: false,
             bcast_level: None,
             log_view: false,
@@ -154,6 +156,7 @@ impl App {
             shot_set: None,
             pixel_size: None,
             sized: false,
+            had_focus: false,
             shot_steps: Vec::new(),
             started: Instant::now(),
             next_shot: 10.0,
@@ -622,8 +625,9 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         let ctx = ui.ctx().clone();
-        // Esc in the log's search box only leaves the box.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && ctx.memory(|m| m.focused().is_none()) {
+        // Esc in the log's search box only leaves the box (egui drops the
+        // focus before this frame's widgets run, so last frame's counts).
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !self.had_focus {
             self.abort();
         }
         self.scripted(&ctx);
@@ -664,6 +668,7 @@ impl eframe::App for App {
             self.dirty = false;
             self.last_saved = Instant::now();
         }
+        self.had_focus = ctx.memory(|m| m.focused().is_some());
         ctx.request_repaint_after(Duration::from_millis(50));
     }
 

@@ -108,8 +108,9 @@ The Ion worker makes plots only while the modem screen shows
 
 Every note, burst, host event and error, newest at the bottom: **All**,
 **Link**, **Bursts**, **Host** or **Errors**, and a search. It follows the
-newest line until scrolled back; **LIVE** goes back to it. Lines can be
-selected and copied, or **Copy** takes all those shown. Drag the panel's
+newest line until scrolled back; **LIVE** goes back to it. **Copy** puts
+the lines shown on the clipboard. Esc in the search box leaves the box;
+elsewhere it aborts the link as before. Drag the panel's
 top edge to resize it, or **Log** in the header gives it the window.
 
 ## Winlink host interface
