@@ -48,6 +48,7 @@ with them talks to one without them as before.
 | `Config::expect_headers` | on | |
 | `HYP_Z`, `HYP_MARGIN` | 5σ, 30 nats | True headers taken lay at most 24.4 nats from the Viterbi decision; no wrong header was taken even with no margin limit |
 | Expected data levels | OFDM levels with effective-SNR threshold ≤ 5 dB, frame counts up to `max_burst_s` | Headers fail only below ~+5 dB; the sender jumps several levels after a loss. About 190 headers per receiver |
+| Expected tiny bursts | poll, idle; turn only while our ACKs ask for it; goodbyes only while saying goodbye | A turn or goodbye taken from a guess would hand the link over or end it |
 
 ## Measured gains and costs
 
@@ -75,9 +76,10 @@ Header loss (bursts lost before the data), 10% point, `hdr_floor`:
 | Long QPSK 1/4 | 1.3 → −0.8 | 5.3 → 2.0 | 5.0 → 3.0 |
 
 False accepts: none from 2880 bursts per guard of another link or with
-unexpected header fields at −3 to +9 dB, none from 20 minutes of noise
-per guard (which never synced), none from 1000 noise LLR vectors against
-500 headers (unit test).
+unexpected header fields at −3 to +9 dB (with every tiny kind in the set,
+tried on the header-only retry), none from 20 minutes of noise per guard
+(which never synced), none from 1000 noise LLR vectors against 500
+headers (unit test).
 
 CPU: a turbo pass ~180 ms per 8 s Normal burst; only bursts with a
 failed codeword pay it. Expected headers: a few hundred correlations of
@@ -87,7 +89,8 @@ failed codeword pay it. Expected headers: a few hundred correlations of
 
 `tests/ionos.rs` `ionos_table`, 2 paths, S:N in 3 kHz against the
 burst's peak, 5-minute sessions, mean of two seeds, bytes per minute,
-main (`befad71`) → next-rx (all three, defaults):
+main (`befad71`) → next-rx (all three, defaults; the same to the byte
+before and after the turn and goodbyes were gated):
 
 | S:N dB | WGN | MPG | MPP | MPD |
 |---:|---:|---:|---:|---:|
@@ -132,7 +135,9 @@ Raw outputs: `lab_runs/next-rx/` (`timing_final`, `turbo_fer`,
   with impulses and other modems' bursts were not tried.
 - **Tiny ACKs are not expected** (bitmap and report: too many values);
   the sending side gains only on full ACK frames. The first data burst
-  of a link or after a turn is not expected either.
+  of a link or after a turn is not expected either, nor a goodbye the
+  peer starts or a turn we did not ask for (gated on purpose: those
+  would end the link or hand it over if taken from a guess).
 - One plain LDPC decode in `turbo_fer` (WGN 5 dB, 0 passes, main's
   receiver) passed every check with wrong bits; the link's frame check
   above it catches such frames. Not chased.

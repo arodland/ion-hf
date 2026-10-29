@@ -19,7 +19,9 @@ use std::time::Instant;
 use ion::fec::{self, Rate};
 use ion::level::{EFF_THRESHOLDS_DB, LADDER, Wave};
 use ion::link::audio;
+use ion::link::frame::Tiny;
 use ion::link::harq::{HarqRx, Soft};
+use ion::link::station::{TINY, user_bits};
 use ion::phy::{self, Constellation, DataMode, ExpectedHeader, Numerology, PhyRx, Pilots, REFINE_K, RxStats};
 use ion_dsp::ionos::{Ionos, Mode, Reference, reference_power};
 
@@ -413,10 +415,12 @@ fn user_for(l: usize, session: u16, id: u16) -> u16 {
     (l - first_ofdm + 2) as u16 | session << 4 | id << 12
 }
 
-/// What a receiving station expects of a data burst in level `l`'s
-/// guard (`Station::expected`, data part, nothing stored): every level
-/// of the guard whose threshold is at most 5 dB, every frame count up to
-/// an 8 s burst, the next two burst numbers.
+/// What a receiving station expects in level `l`'s guard
+/// (`Station::expected`, nothing stored): data bursts at every level of
+/// the guard whose threshold is at most 5 dB, every frame count up to an
+/// 8 s burst, the next two burst numbers; and every tiny kind it can
+/// expect (poll, idle, each turn, the goodbyes), tried on the
+/// header-only retry of every burst whose header failed.
 fn expected_after(l: usize, session: u16) -> Vec<ExpectedHeader> {
     let Wave::Ofdm(g) = LADDER[l].wave else {
         panic!("not OFDM")
@@ -441,6 +445,24 @@ fn expected_after(l: usize, session: u16) -> Vec<ExpectedHeader> {
                 });
             }
         }
+    }
+    let tinies = [Tiny::Poll, Tiny::Idle, Tiny::DiscReq, Tiny::DiscAck]
+        .map(Tiny::encode)
+        .into_iter()
+        .chain(
+            std::iter::once(0)
+                .chain((0..64).map(|q| 1 << 6 | q))
+                .map(|x| (Tiny::Turn { snr_db: None }.encode().0, x)),
+        );
+    for (kind, extra) in tinies {
+        out.push(ExpectedHeader {
+            constellation: Constellation::Qpsk,
+            data_symbols: 0,
+            user: user_bits(TINY, session as u8, kind),
+            extra,
+            pilots: Pilots::Robust,
+            mode: DataMode::PLAIN,
+        });
     }
     out
 }
@@ -474,6 +496,10 @@ fn receive_hdr(b: &Burst, want: (u16, usize), expect: Option<&[ExpectedHeader]>,
         ..HdrOut::default()
     };
     for x in &got {
+        if x.header_only {
+            o.wrong |= x.user >> 4 & 0xFF == SESSION;
+            continue;
+        }
         let nsym = phy::data_symbols_with(b.num, x.pilots, x.constellation, x.llrs.len().max(1));
         if (x.user, nsym) == want && !x.header_only {
             o.right = true;

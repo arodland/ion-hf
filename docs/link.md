@@ -286,12 +286,14 @@ most 5 dB (the sender may jump several levels after a loss; headers fail
 only below about +5 dB, where faster levels lose their data anyway), with
 and without the HARQ increments for the stored codewords (check bits
 `1 + P mod 3`, or 0), every frame count up to `max_burst_s`, the next two
-burst numbers; and the tiny bursts that carry nothing unknown: poll,
-idle, turn (with each 6-bit report or none), goodbye. Sending side: a
-full ACK frame in the waveform of our data and of the last ACK, and the
-goodbyes. Tiny ACKs carry a bitmap and a report, too many values to list.
-Nothing is expected outside a link: a call comes in MFSK. A Normal
-receiver gets about 190 headers (`tests/expect.rs`, which also checks
+burst numbers; poll and idle; and the turn (with each 6-bit report or
+none) only while our ACKs ask for it. Sending side: a full ACK frame in
+the waveform of our data and of the last ACK. The goodbyes only while we
+are saying goodbye ourselves: a turn or a goodbye taken from a guess
+would hand the link over or end it, so those are expected only when our
+side has asked for them. Tiny ACKs carry a bitmap and a report, too many
+values to list. Nothing is expected outside a link: a call comes in
+MFSK. A Normal receiver gets about 190 headers (`tests/expect.rs`, which also checks
 that every slow, short data burst and tiny burst of a running link was in
 the set). `Config::expect_headers` (on) turns it off.
 

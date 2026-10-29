@@ -34,9 +34,9 @@ impl Station {
     /// once), with and without the increments for what we store, every
     /// frame count up to `Config::max_burst_s` (longer bursts come only
     /// while every frame gets through, far above where a header fails),
-    /// the next two burst numbers; and its tiny bursts that carry nothing
-    /// unknown (poll, idle, turn, goodbye). Sending side: a full ACK frame
-    /// in the waveforms ACKs come in, and the goodbyes.
+    /// the next two burst numbers; its poll and idle, and its turn while
+    /// we ask for it. Sending side: a full ACK frame in the waveforms ACKs
+    /// come in. Saying goodbye: the goodbyes.
     pub fn expected(&self) -> Vec<Expected> {
         let mut out = Vec::new();
         if !self.cfg.expect_headers || !matches!(self.state, State::Connected | State::Disconnecting) {
@@ -53,20 +53,24 @@ impl Station {
                 });
             }
         };
-        tiny(&mut out, Tiny::DiscReq.encode());
-        tiny(&mut out, Tiny::DiscAck.encode());
+        // A goodbye or a turn taken from a guess would end the link or
+        // hand it over: expected only once our own side has asked for it.
         if self.state == State::Disconnecting {
+            tiny(&mut out, Tiny::DiscReq.encode());
+            tiny(&mut out, Tiny::DiscAck.encode());
             return out;
         }
         match self.role {
             Role::Receiver => {
                 tiny(&mut out, Tiny::Poll.encode());
                 tiny(&mut out, Tiny::Idle.encode());
-                // A turn carries how well the peer hears us: its 6-bit
-                // report, or none.
-                let (kind, _) = Tiny::Turn { snr_db: None }.encode();
-                for extra in std::iter::once(0).chain((0..64).map(|q| 1 << 6 | q)) {
-                    tiny(&mut out, (kind, extra));
+                // Our ACKs ask for the turn while we have data; it carries
+                // how well the peer hears us: its 6-bit report, or none.
+                if self.has_data() {
+                    let (kind, _) = Tiny::Turn { snr_db: None }.encode();
+                    for extra in std::iter::once(0).chain((0..64).map(|q| 1 << 6 | q)) {
+                        tiny(&mut out, (kind, extra));
+                    }
                 }
                 self.expected_data(&mut out);
             }

@@ -7,10 +7,10 @@ MPG -3 dB seed 0: 2314 B, 463 B/min
 MPG -3 dB seed 1: 2160 B, 432 B/min
 WGN -3 dB seed 1: 3226 B, 645 B/min
 WGN +0 dB seed 1: 6460 B, 1292 B/min
-MPD -3 dB seed 1: 2622 B, 524 B/min
 MPG +0 dB seed 0: 2684 B, 537 B/min
-MPD -3 dB seed 0: 2490 B, 498 B/min
+MPD -3 dB seed 1: 2622 B, 524 B/min
 WGN +0 dB seed 0: 4250 B, 850 B/min
+MPD -3 dB seed 0: 2490 B, 498 B/min
 MPG +0 dB seed 1: 2304 B, 461 B/min
 MPP +0 dB seed 0: 5502 B, 1100 B/min
 MPP +0 dB seed 1: 2858 B, 572 B/min
@@ -42,8 +42,8 @@ WGN +20 dB seed 0: 162860 B, 32572 B/min
 MPD +10 dB seed 0: 43010 B, 8602 B/min
 WGN +20 dB seed 1: 162860 B, 32572 B/min
 MPD +10 dB seed 1: 55930 B, 11186 B/min
-MPG +20 dB seed 1: 117980 B, 23596 B/min
 MPG +20 dB seed 0: 121040 B, 24208 B/min
+MPG +20 dB seed 1: 117980 B, 23596 B/min
 MPP +20 dB seed 0: 136850 B, 27370 B/min
 MPP +20 dB seed 1: 142630 B, 28526 B/min
 MPD +20 dB seed 0: 108970 B, 21794 B/min
@@ -191,5 +191,5 @@ Air time, MPD 3 dB:
 | all | 57 | 10.38 | 57% | 14% | 16% | 1% | 12% |
 test ionos_table ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 497.74s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 478.50s
 

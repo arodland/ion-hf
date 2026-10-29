@@ -865,8 +865,9 @@ two-copy retry. Outside a link the set is empty and nothing changes.
 
 Measured (`tests/rx_lab.rs`, `hdr_floor`: 8 s bursts, IONOS 2 paths,
 60 per point, the set a station holds for the guard's levels up to
-5 dB with nothing stored: 56 headers for Normal, 26 for Long), S:N where
-10% of bursts are lost before the data:
+5 dB with nothing stored, plus every tiny kind it can expect: 125
+headers for Normal, 95 for Long), S:N where 10% of bursts are lost
+before the data:
 
 | | WGN | MPG | MPP |
 |---|---:|---:|---:|
@@ -875,10 +876,13 @@ Measured (`tests/rx_lab.rs`, `hdr_floor`: 8 s bursts, IONOS 2 paths,
 | Long QPSK 1/4, plain | 1.3 | 5.3 | 5.0 |
 | Long QPSK 1/4, expected headers | −0.8 | 2.0 | 3.0 |
 
-No wrong header was taken there, nor (`hdr_false_long`) from 2880 bursts
+No wrong header was taken there, data or header-only (the header-only
+set is tried on the two-copy retry of every burst whose header failed,
+where the second copy is data), nor (`hdr_false_long`) from 2880 bursts
 per guard of another link (another session) or of our own link with
 unexpected check bits, at −3 to +9 dB on WGN and MPP, even with no
-margin limit at all; 20 minutes of noise per guard never synced.
+margin limit at all (data headers only, first run); 20 minutes of noise
+per guard never synced.
 `expected_headers_on_noise_and_weak_signal` (unit test) puts 1000 header
 LLR vectors of pure noise against 500 expected headers (none passes) and
 finds the true header from LLRs too weak for the Viterbi decision alone.
