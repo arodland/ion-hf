@@ -1,0 +1,61 @@
+### turbo L10 WGN, 30 bursts per point
+| S:N | 0 passes: loss | ms/pass | wrong | 1 passes: loss | ms/pass | wrong | 2 passes: loss | ms/pass | wrong | 4 passes: loss | ms/pass | wrong |
+| 2 | 1.000 | 0 | 0 | 1.000 | 182 | 0 | 1.000 | 180 | 0 | 1.000 | 183 | 0 |
+| 3 | 1.000 | 0 | 0 | 1.000 | 175 | 0 | 1.000 | 171 | 0 | 1.000 | 172 | 0 |
+| 4 | 0.974 | 0 | 0 | 0.967 | 174 | 0 | 0.967 | 174 | 0 | 0.967 | 176 | 0 |
+| 5 | 0.074 | 0 | 1 | 0.070 | 194 | 1 | 0.070 | 190 | 1 | 0.070 | 191 | 1 |
+| 6 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 7 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 8 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+WGN 0 passes: 10% 4.9 30% 4.5 50% 4.3; stored LLRs of 819 codewords failed every way: 0.4245 bit/bit
+WGN 1 passes: 10% 4.9 30% 4.4 50% 4.3; stored LLRs of 819 codewords failed every way: 0.4239 bit/bit
+WGN 2 passes: 10% 4.9 30% 4.4 50% 4.3; stored LLRs of 819 codewords failed every way: 0.4239 bit/bit
+WGN 4 passes: 10% 4.9 30% 4.4 50% 4.3; stored LLRs of 819 codewords failed every way: 0.4239 bit/bit
+### turbo L10 MPG, 30 bursts per point
+| S:N | 0 passes: loss | ms/pass | wrong | 1 passes: loss | ms/pass | wrong | 2 passes: loss | ms/pass | wrong | 4 passes: loss | ms/pass | wrong |
+| 5 | 0.756 | 0 | 0 | 0.715 | 180 | 0 | 0.700 | 180 | 0 | 0.700 | 181 | 0 |
+| 6 | 0.622 | 0 | 0 | 0.556 | 183 | 0 | 0.552 | 188 | 0 | 0.552 | 182 | 0 |
+| 7 | 0.385 | 0 | 0 | 0.311 | 185 | 0 | 0.307 | 184 | 0 | 0.307 | 185 | 0 |
+| 8 | 0.267 | 0 | 0 | 0.237 | 183 | 0 | 0.237 | 185 | 0 | 0.237 | 189 | 0 |
+| 9 | 0.200 | 0 | 0 | 0.152 | 183 | 0 | 0.137 | 191 | 0 | 0.107 | 188 | 0 |
+| 10 | 0.107 | 0 | 0 | 0.096 | 181 | 0 | 0.085 | 187 | 0 | 0.074 | 183 | 0 |
+| 11 | 0.030 | 0 | 0 | 0.011 | 179 | 0 | 0.007 | 189 | 0 | 0.004 | 190 | 0 |
+| 12 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 13 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 14 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 |
+MPG 0 passes: 10% 10.1 30% 7.7 50% 6.5; stored LLRs of 490 codewords failed every way: 0.4054 bit/bit
+MPG 1 passes: 10% 9.9 30% 7.1 50% 6.2; stored LLRs of 490 codewords failed every way: 0.4054 bit/bit
+MPG 2 passes: 10% 9.7 30% 7.1 50% 6.2; stored LLRs of 490 codewords failed every way: 0.4058 bit/bit
+MPG 4 passes: 10% 9.2 30% 7.1 50% 6.2; stored LLRs of 490 codewords failed every way: 0.4061 bit/bit
+### turbo L10 MPP, 30 bursts per point
+| S:N | 0 passes: loss | ms/pass | wrong | 1 passes: loss | ms/pass | wrong | 2 passes: loss | ms/pass | wrong | 4 passes: loss | ms/pass | wrong |
+| 4 | 1.000 | 0 | 0 | 1.000 | 175 | 0 | 1.000 | 173 | 0 | 1.000 | 173 | 0 |
+| 5 | 0.878 | 0 | 0 | 0.748 | 172 | 0 | 0.700 | 174 | 0 | 0.700 | 176 | 0 |
+| 6 | 0.607 | 0 | 0 | 0.322 | 183 | 0 | 0.200 | 185 | 0 | 0.167 | 188 | 0 |
+| 7 | 0.211 | 0 | 0 | 0.122 | 187 | 0 | 0.100 | 187 | 0 | 0.100 | 189 | 0 |
+| 8 | 0.011 | 0 | 0 | 0.000 | 182 | 0 | 0.000 | 193 | 0 | 0.000 | 190 | 0 |
+| 9 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 10 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 11 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 12 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+MPP 0 passes: 10% 7.3 30% 6.7 50% 6.2; stored LLRs of 405 codewords failed every way: 0.4221 bit/bit
+MPP 1 passes: 10% 7.0 30% 6.1 50% 5.5; stored LLRs of 405 codewords failed every way: 0.4221 bit/bit
+MPP 2 passes: 10% 7.0 30% 5.7 50% 5.3; stored LLRs of 405 codewords failed every way: 0.4221 bit/bit
+MPP 4 passes: 10% 7.0 30% 5.6 50% 5.2; stored LLRs of 405 codewords failed every way: 0.4221 bit/bit
+### turbo L10 MPD, 30 bursts per point
+| S:N | 0 passes: loss | ms/pass | wrong | 1 passes: loss | ms/pass | wrong | 2 passes: loss | ms/pass | wrong | 4 passes: loss | ms/pass | wrong |
+| 8 | 0.344 | 0 | 0 | 0.141 | 186 | 0 | 0.133 | 186 | 0 | 0.133 | 190 | 0 |
+| 9 | 0.163 | 0 | 0 | 0.133 | 180 | 0 | 0.133 | 182 | 0 | 0.133 | 193 | 0 |
+| 10 | 0.100 | 0 | 0 | 0.100 | 0 | 0 | 0.100 | 0 | 0 | 0.100 | 0 | 0 |
+| 11 | 0.067 | 0 | 0 | 0.067 | 0 | 0 | 0.067 | 0 | 0 | 0.067 | 0 | 0 |
+| 12 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 |
+| 13 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 |
+| 14 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 |
+| 15 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 | 0.033 | 0 | 0 |
+| 16 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 18 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+| 20 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 | 0.000 | 0 | 0 |
+MPD 0 passes: 10% 10.0 30% 8.2 50% <8; stored LLRs of 0 codewords failed every way: 0.0000 bit/bit
+MPD 1 passes: 10% 10.0 30% <8 50% <8; stored LLRs of 0 codewords failed every way: 0.0000 bit/bit
+MPD 2 passes: 10% 10.0 30% <8 50% <8; stored LLRs of 0 codewords failed every way: 0.0000 bit/bit
+MPD 4 passes: 10% 10.0 30% <8 50% <8; stored LLRs of 0 codewords failed every way: 0.0000 bit/bit
