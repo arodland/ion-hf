@@ -398,7 +398,9 @@ fn mfsk_plot(b: &MfskBurst) -> Option<RxPlot> {
     }
     let shares = b
         .metrics
-        .chunks_exact(VALS)
+        .as_chunks::<VALS>()
+        .0
+        .iter()
         .step_by(n.div_ceil(PLOT_MAX))
         .map(|m| {
             let (mut top, mut second, mut sum) = (0f32, 0f32, 0f32);

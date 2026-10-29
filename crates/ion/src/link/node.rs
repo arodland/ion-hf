@@ -29,7 +29,7 @@ pub struct BurstNote {
     pub reported_db: Option<f32>,
 }
 
-/// A burst heard, as its receiver saw it ([`Node::set_plot`]).
+/// A data burst heard, as its receiver saw it ([`Node::set_plot`]).
 #[derive(Clone, Debug)]
 pub struct BurstPlot {
     pub plot: RxPlot,
@@ -188,7 +188,7 @@ impl Node {
         std::mem::take(&mut self.journal)
     }
 
-    /// Keep a decode plot of every burst heard with data (off by default).
+    /// Keep a decode plot of every data burst heard (off by default).
     pub fn set_plot(&mut self, on: bool) {
         self.rx.set_plot(on);
         if !on {
@@ -250,7 +250,7 @@ impl Node {
             self.codewords_failed += lost;
             let first = inc.frames.first().and_then(|f| f.as_deref());
             let (what, calls, reported_db) = describe(inc.code, inc.user, inc.extra, first, inc.frames.len());
-            if let Some(plot) = plot {
+            if let Some(plot) = plot.filter(|_| inc.code < LADDER.len()) {
                 if self.plots.len() >= 8 {
                     self.plots.remove(0);
                 }
