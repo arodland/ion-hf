@@ -2,7 +2,7 @@
 //! from the peer's ACKs.
 
 use super::config::Gear;
-use super::{Sent, Station, TINY, frame_bits};
+use super::{Sent, Station, TINY, caps, cue_s, frame_bits};
 use crate::fec;
 use crate::level::{FLOOR, FrameSize, Guard, LADDER, Wave};
 
@@ -38,6 +38,7 @@ fn guard_ms(w: Wave) -> f32 {
 impl Station {
     pub(super) fn on_ack(&mut self, burst: u8, bitmap: u64, stored: bool, snr_db: f32, now: f64) {
         let aim = self.aim_snr(snr_db - self.air_db(self.level));
+        self.aim_db = Some(aim);
         self.target = self.level_for(aim);
         if self.last_burst.is_empty() {
             return; // an Idle check-in
@@ -250,13 +251,14 @@ impl Station {
     /// `max_burst_s`: what a level is worth.
     fn level_rate(&self, l: usize) -> f64 {
         let lv = &LADDER[l];
+        let cue = self.cue_for(l);
         // A frame's air time, and the burst's fixed part (an MFSK burst
         // of one bit already sends a whole codeword).
-        let one = self.air.duration(lv.wave, l, frame_bits(l, 1));
-        let frame = self.air.duration(lv.wave, l, frame_bits(l, 2)) - one;
+        let one = self.data_s(l, frame_bits(l, 1), cue);
+        let frame = self.data_s(l, frame_bits(l, 2), cue) - one;
         let fixed = one - frame;
         let frames = ((self.cfg.max_burst_s - fixed) / frame.max(1e-3)).floor().max(1.0);
-        let burst = self.air.duration(lv.wave, l, frame_bits(l, frames as usize));
+        let burst = self.data_s(l, frame_bits(l, frames as usize), cue);
         frames * (lv.frame_bytes() * 8) as f64 / burst.max(1e-3)
     }
 
@@ -311,6 +313,23 @@ impl Station {
             .take(n)
             .last()
             .unwrap_or(at)
+    }
+
+    /// Whether a data burst at level `l` goes behind a cue: a full-band
+    /// OFDM level, on a link that agreed to cues, while the SNR aimed by is
+    /// below `cue_below_db` (where the OFDM header starts to miss bursts;
+    /// above it the cue only costs air time).
+    pub(super) fn cue_for(&self, l: usize) -> bool {
+        self.caps & caps::CUE != 0
+            && matches!(LADDER[l].wave, Wave::Ofdm(Guard::Normal | Guard::Long))
+            && self.aim_db.is_none_or(|a| a < self.cfg.cue_below_db)
+    }
+
+    /// Seconds of a data burst at level `l` of `bits` coded bits, behind
+    /// a cue or not.
+    pub(super) fn data_s(&self, l: usize, bits: usize, cue: bool) -> f64 {
+        let c = if cue { cue_s() } else { 0.0 };
+        self.air.duration(LADDER[l].wave, l, bits) + c
     }
 
     /// Mean power of level `l` on the air against the carrier, dB, as
@@ -407,7 +426,7 @@ impl Station {
     /// the long-guard levels up.
     pub fn clean_burst_s(&self, level: usize) -> f64 {
         let w = LADDER[level].wave;
-        let pre = self.air.duration(w, level, 1);
+        let pre = self.data_s(level, 1, self.cue_for(level));
         let ack = self.air.duration(w, TINY, 0);
         let turn = 2.0 * self.cfg.turnaround_s;
         let lo = self.cfg.max_burst_s;

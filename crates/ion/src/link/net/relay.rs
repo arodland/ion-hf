@@ -203,6 +203,7 @@ impl NetStation {
             }
         }
         Some(Outgoing {
+            cue: false,
             wave: LADDER[level].wave,
             code: level,
             user: user_bits(level, self.id, ASIDE),

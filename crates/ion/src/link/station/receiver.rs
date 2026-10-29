@@ -2,7 +2,7 @@
 
 use super::{FLOOR_WAVE, Incoming, Outgoing, Role, STALL_S, Station, TINY, TINY_ALL, more_robust, user_hi, wave_down};
 use crate::level::{FrameSize, Guard, LADDER, Wave};
-use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
+use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, caps, flags};
 use crate::link::harq;
 use crate::link::report::ChanReport;
 use crate::phy_mfsk::MfskMode;
@@ -40,7 +40,14 @@ impl Station {
             let combined;
             let frames = match &inc.soft {
                 Some(soft) if long => {
-                    let r = self.harq.receive(inc.code, user_hi(inc.user) >> 2, soft);
+                    // Only a cue carries the field (`Config::harq_partial`).
+                    let field =
+                        if self.caps & caps::CUE != 0 && matches!(inc.wave, Wave::Ofdm(Guard::Normal | Guard::Long)) {
+                            inc.extra & 0x3F
+                        } else {
+                            0
+                        };
+                    let r = self.harq.receive_partial(inc.code, user_hi(inc.user) >> 2, field, soft);
                     self.stats.harq_recovered += r.recovered as u32;
                     combined = r
                         .frames
@@ -121,6 +128,7 @@ impl Station {
                 self.role = Role::Sender;
                 self.harq.clear();
                 self.at_peer.clear();
+                self.at_peer_rest.clear();
                 self.peer_heard = None;
                 // The channel is the same both ways: our own class, and
                 // the lower of the Turn's SNR and the last data burst's.
@@ -133,6 +141,7 @@ impl Station {
                 // The peer's report of how it hears us is our own direction;
                 // without one, the channel is taken to be the same both ways.
                 let snr = report.unwrap_or(snr);
+                self.aim_db = Some(snr - self.air_db(self.rx_level));
                 self.target = self.level_for(snr - self.air_db(self.rx_level));
                 let start = match report {
                     Some(r) => self.level_for(r - self.air_db(self.rx_level) - self.cfg.start_margin_db.unwrap_or(0.0)),
@@ -334,6 +343,7 @@ impl Station {
             compress: self.compressing(),
             class: self.chan.class(),
             slot: inc.slot,
+            caps: self.caps,
         };
         self.tiny(t, inc.wave)
     }

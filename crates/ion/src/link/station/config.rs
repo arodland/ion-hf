@@ -135,6 +135,20 @@ pub struct Config {
     /// Long-frame bursts join contiguous pieces in flight (re-cut small by
     /// a visit to the MFSK floor) back up to the frame size.
     pub merge_pieces: bool,
+    /// Offer (calling) or accept (called) MFSK cues
+    /// ([`crate::link::frame::caps::CUE`]): used only when both ends have
+    /// it on. A full-band OFDM data burst then goes behind a cue
+    /// (`link::audio::transmit`) while the SNR the gear aims by is below
+    /// `cue_below_db`: the cue is heard 11–14 dB below the OFDM header.
+    pub cue: bool,
+    /// See `cue`: dB in 2.4 kHz, as the ACKs report it (the effective SNR
+    /// with `eff_snr`).
+    pub cue_below_db: f32,
+    /// With a cue: when the HARQ increments for everything the peer
+    /// holds do not fit the burst, send those that do (the longest stored
+    /// first) and name how many in the cue, rather than stretching the
+    /// burst (`harq_stretch`, still used for bursts without a cue).
+    pub harq_partial: bool,
     /// Lab: every data burst at this level, whatever the reports and
     /// losses say.
     #[doc(hidden)]
@@ -153,6 +167,10 @@ pub enum Gear {
     /// with holds (Ion HF 0.1.0-alpha.4 and before).
     Ladder,
 }
+
+/// Default [`Config::cue_below_db`]: about where the OFDM data header
+/// starts to miss bursts on a fading channel.
+pub const CUE_BELOW_DB: f32 = 6.0;
 
 /// Default [`Config::skip_slices_from`]: one past the first long-guard
 /// level.
@@ -204,6 +222,9 @@ impl Config {
             gear: Gear::Goodput,
             harq_stretch: true,
             merge_pieces: true,
+            cue: true,
+            cue_below_db: CUE_BELOW_DB,
+            harq_partial: true,
             pin_level: None,
         }
     }

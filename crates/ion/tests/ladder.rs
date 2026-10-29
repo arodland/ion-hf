@@ -182,6 +182,7 @@ fn a_slice_burst_is_heard_once_in_its_slot() {
     let frames = vec![f.encode(LADDER[level].frame_bytes())];
     for slot in 0..3u16 {
         let out = Outgoing {
+            cue: false,
             wave: LADDER[level].wave,
             code: level,
             user: user_bits(level, 9, 1),
@@ -240,6 +241,7 @@ fn control_tiny_and_data_bursts_survive_the_ofdm_path() {
             l => (vec![f.encode(LADDER[l].frame_bytes()); 3], 0),
         };
         let out = Outgoing {
+            cue: false,
             wave: Wave::Ofdm(guard),
             code,
             user: user_bits(code, 9, if code == TINY { 3 } else { 1 }),
@@ -1443,6 +1445,7 @@ fn air_power_db_seed(l: usize, seed: u32) -> (f32, f32, f32) {
     let mut f = ion::link::frame::Frame::new(ion::link::frame::Kind::Data, 9);
     f.payload = payload(lv.frame_bytes().saturating_sub(16), seed);
     let burst = |n: usize| Outgoing {
+        cue: false,
         wave: lv.wave,
         code: l,
         user: user_bits(l, 9, 1),
@@ -1537,6 +1540,7 @@ fn occupied_bandwidth_table() {
         let mut f = ion::link::frame::Frame::new(ion::link::frame::Kind::Data, 9);
         f.payload = payload(lv.frame_bytes().saturating_sub(16), l as u32 + 1);
         let burst = |k: usize| Outgoing {
+            cue: false,
             wave: lv.wave,
             code: l,
             user: user_bits(l, 9, 1),

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use super::compress::{StreamDecoder, StreamEncoder};
-use super::frame::{Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
+use super::frame::{Frame, Kind, TINY_ACK_FRAMES, Tiny, caps, flags};
 use super::harq::{self, HarqRx, Soft};
 use super::report::{ChanClass, ChanTrack};
 use crate::chan::ChannelMeas;
@@ -37,6 +37,14 @@ const MAX_FRAMES: usize = harq::MAX_SLOTS;
 /// Bitmap of a tiny ACK with every bit set: for a burst of more than
 /// [`TINY_ACK_FRAMES`] frames, "all of them arrived".
 const TINY_ALL: u64 = (1 << TINY_ACK_FRAMES) - 1;
+
+/// The MFSK mode of a cue ([`Outgoing::cue`]).
+pub const CUE_MODE: MfskMode = MfskMode::R1;
+
+/// Seconds of a cue on the air (1.12 s).
+pub fn cue_s() -> f64 {
+    crate::phy_mfsk::cue_samples(CUE_MODE) as f64 / ion_dsp::dsp::AUDIO_RATE as f64
+}
 
 /// Air time of bursts, from the PHYs and FEC in use.
 pub trait Air: Send + Sync {
@@ -132,7 +140,8 @@ pub struct Outgoing {
     /// For the PHY header: code in bits 0–3, session 4–11, burst number or
     /// tiny kind 12–15.
     pub user: u16,
-    /// Tiny message body (header-only bursts).
+    /// Tiny message body (header-only bursts); a slice data burst's slot;
+    /// a cued burst's HARQ parity field ([`harq::partial_field`]).
     pub extra: u16,
     /// Encoded frames, each one codeword's information bytes.
     pub frames: Vec<Vec<u8>>,
@@ -140,9 +149,19 @@ pub struct Outgoing {
     /// Empty: every frame whole, from position 0. A long frame sent from
     /// a later position is a HARQ increment (see [`harq`]).
     pub spans: Vec<(usize, usize)>,
+    /// A full-band OFDM data burst that goes behind an MFSK cue
+    /// ([`CUE_MODE`], [`cue_s`] long, carrying its header and `extra`), only
+    /// to a peer that agreed to [`caps::CUE`].
+    pub cue: bool,
 }
 
 impl Outgoing {
+    /// Seconds on the air, the cue included.
+    pub fn duration(&self, air: &dyn Air) -> f64 {
+        let cue = if self.cue { cue_s() } else { 0.0 };
+        air.duration(self.wave, self.code, self.coded_bits()) + cue
+    }
+
     /// Coded bits of the burst's data part.
     pub fn coded_bits(&self) -> usize {
         if self.spans.is_empty() {
@@ -243,6 +262,8 @@ pub struct Stats {
     /// Compressed records that failed to decode (delivered as they were).
     pub codec_errors: u32,
     pub data_bursts: u32,
+    /// Data bursts sent behind a cue.
+    pub cued_bursts: u32,
     pub control_bursts: u32,
     /// Whole frames sent, and how many of them were resends.
     pub frames_sent: u32,
@@ -343,6 +364,8 @@ pub struct Station {
     success_at: [f64; LADDER.len()],
     /// The last ACKs' SNR reports, newest last (for `smooth_target`).
     snr_reports: VecDeque<f32>,
+    /// The SNR the gear last aimed by (for `cue_below_db`).
+    aim_db: Option<f32>,
     /// Each level is not used before this time, nor are faster ones: all
     /// of them, or (`hold_all` false) only those whose guard is no longer
     /// than its own (see [`Station::usable`]).
@@ -378,6 +401,10 @@ pub struct Station {
     at_peer: Vec<(u32, usize)>,
     /// The waveform all of `at_peer` was sent in.
     peer_wave: Wave,
+    /// The part of `at_peer` the last data burst left out
+    /// (`Config::harq_partial`): it stays stored, ahead of the burst's
+    /// failures.
+    at_peer_rest: Vec<(u32, usize)>,
     peer_wants_turn: bool,
     /// When the peer asked for the turn (for `break_in_s`).
     turn_asked_at: f64,
@@ -418,6 +445,8 @@ pub struct Station {
     // Compression (`cfg.compress`).
     /// Whether this link's compression has been settled (connected).
     agreed: bool,
+    /// The [`caps`] both ends have (settled at connect).
+    caps: u8,
     /// Data given to `send` before that, kept whole until we know.
     unsent: Vec<Vec<u8>>,
     tx_codec: Option<StreamEncoder>,
@@ -459,6 +488,7 @@ impl Station {
             success: [None; LADDER.len()],
             success_at: [f64::NEG_INFINITY; LADDER.len()],
             snr_reports: VecDeque::new(),
+            aim_db: None,
             blocked_until: [f64::NEG_INFINITY; LADDER.len()],
             hold_all: [true; LADDER.len()],
             burst_id: 0,
@@ -473,6 +503,7 @@ impl Station {
             last_burst: Vec::new(),
             at_peer: Vec::new(),
             peer_wave: FLOOR_WAVE,
+            at_peer_rest: Vec::new(),
             peer_wants_turn: false,
             turn_asked_at: 0.0,
             peer_wants_disc: false,
@@ -496,6 +527,7 @@ impl Station {
             stats: Stats::default(),
             sessions: seed,
             agreed: false,
+            caps: 0,
             unsent: Vec::new(),
             tx_codec: None,
             rx_codec: None,
@@ -505,6 +537,16 @@ impl Station {
     /// Whether this link compresses (both ends agreed at connect).
     pub fn compressing(&self) -> bool {
         self.tx_codec.is_some()
+    }
+
+    /// The [`caps`] this link uses (both ends have them).
+    pub fn caps(&self) -> u8 {
+        self.caps
+    }
+
+    /// The [`caps`] we offer or accept.
+    fn own_caps(&self) -> u8 {
+        if self.cfg.cue { caps::CUE } else { 0 }
     }
 
     // -- application side -----------------------------------------------------
@@ -573,6 +615,7 @@ impl Station {
         if self.cfg.compress {
             f.flags |= flags::COMPRESS;
         }
+        f.flags |= self.own_caps() << flags::CAPS_SHIFT;
         // Armed as an expired wait: the next poll sends it as the first try.
         self.retry = Some(self.control(f, FLOOR_WAVE));
         self.awaiting = Awaiting::ConnAck;
@@ -944,6 +987,7 @@ impl Station {
             self.role = Role::Receiver;
             self.clear_wait();
             self.at_peer.clear();
+            self.at_peer_rest.clear();
             self.harq.clear();
             self.last_ack = (0, 0, 0, false);
             self.last_progress = now;
@@ -977,6 +1021,7 @@ impl Station {
             self.answering = true;
             self.reset_data();
             self.agree(self.cfg.compress && f.flags & flags::COMPRESS != 0);
+            self.caps = self.own_caps() & f.flags >> flags::CAPS_SHIFT;
             self.note_rx_channel(inc);
             self.reply = Some(self.conn_ack(inc));
             return;
@@ -1012,6 +1057,7 @@ impl Station {
             extra,
             frames: Vec::new(),
             spans: Vec::new(),
+            cue: false,
         }
     }
 
@@ -1023,6 +1069,7 @@ impl Station {
             extra: 0,
             frames: vec![f.encode(CONTROL_BYTES)],
             spans: Vec::new(),
+            cue: false,
         }
     }
 
@@ -1038,7 +1085,7 @@ impl Station {
         if b.code >= LADDER.len() {
             self.stats.control_bursts += 1;
         }
-        self.stats.airtime_s += self.air.duration(b.wave, b.code, b.coded_bits());
+        self.stats.airtime_s += b.duration(&*self.air);
         self.last_tx_wave = b.wave;
         b
     }
@@ -1057,6 +1104,7 @@ impl Station {
         self.rx_pending.clear();
         self.last_burst.clear();
         self.at_peer.clear();
+        self.at_peer_rest.clear();
         self.harq.clear();
         self.last_ack = (0, 0, 0, false);
         self.peer_wants_turn = false;
@@ -1076,6 +1124,8 @@ impl Station {
         // Compression is agreed afresh on each connection; data queued
         // for it (`unsent`), like `out`, stays.
         self.agreed = false;
+        self.caps = 0;
+        self.aim_db = None;
         self.tx_codec = None;
         self.rx_codec = None;
         self.peer_class = ChanClass::default();

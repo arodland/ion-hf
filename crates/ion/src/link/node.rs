@@ -301,7 +301,10 @@ impl Node {
         self.on_air = true;
         self.last_key = now;
         let first = b.frames.first().map(Vec::as_slice);
-        let (what, calls, reported_db) = describe(b.code, b.user, b.extra, first, b.frames.len());
+        let (mut what, calls, reported_db) = describe(b.code, b.user, b.extra, first, b.frames.len());
+        if b.cue {
+            what.push_str(" CUE");
+        }
         self.note(BurstNote {
             tx: true,
             level: (b.code < LADDER.len()).then_some(b.code),
