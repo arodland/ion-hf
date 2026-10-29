@@ -2,7 +2,8 @@
 //! Express) on VARA-style host ports and KISS.
 //!
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
-//! [--setup] [--shots DIR] [--quit S] [--loop-snr DB]
+//! [--setup] [--log] [--shots DIR] [--quit S] [--loop-snr DB]
+//! [--panel a|b] [--size WxH] [--shot-set NAME --shot-at S]
 //! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
@@ -14,8 +15,11 @@ mod engine;
 mod history;
 mod host;
 mod ion_engine;
+mod logbook;
+mod panel;
 #[cfg(test)]
 mod pipeline_tests;
+mod plot;
 mod radio;
 mod resample;
 mod rig;
@@ -44,6 +48,16 @@ struct Args {
     quit: Option<f64>,
     /// Loopback only: the simulated channel's SNR, dB.
     loop_snr: Option<f32>,
+    /// Open on the log.
+    log: bool,
+    /// The lamp style, while both are on trial.
+    panel: Option<panel::Style>,
+    /// Window size in pixels (screenshots); the saved size is left alone.
+    size: Option<[f32; 2]>,
+    /// With `shots`: one set of screenshots `shot_at` seconds in, in every
+    /// lamp style at 1280x720 and 1920x1080, named after `shot_set`.
+    shot_set: Option<String>,
+    shot_at: Option<f64>,
 }
 
 fn parse_args() -> Args {
@@ -55,6 +69,11 @@ fn parse_args() -> Args {
         shots: None,
         quit: None,
         loop_snr: None,
+        log: false,
+        panel: None,
+        size: None,
+        shot_set: None,
+        shot_at: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -66,6 +85,16 @@ fn parse_args() -> Args {
             "--shots" => args.shots = it.next(),
             "--quit" => args.quit = it.next().and_then(|v| v.parse().ok()),
             "--loop-snr" => args.loop_snr = it.next().and_then(|v| v.parse().ok()),
+            "--log" => args.log = true,
+            "--panel" => args.panel = it.next().and_then(|v| panel::Style::parse(&v)),
+            "--size" => {
+                args.size = it.next().and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some([w.parse().ok()?, h.parse().ok()?])
+                })
+            }
+            "--shot-set" => args.shot_set = it.next(),
+            "--shot-at" => args.shot_at = it.next().and_then(|v| v.parse().ok()),
             "-h" | "--help" => {
                 println!("ionhf [--loopback] [--tci ws://127.0.0.1:50001] [--connect CALL] [--setup]");
                 std::process::exit(0);
@@ -117,8 +146,8 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if args.loopback { "Ion HF (loopback)" } else { "Ion HF" })
-        .with_inner_size(app::SIZE)
-        .with_min_inner_size([480.0, 380.0]);
+        .with_inner_size(args.size.unwrap_or(app::SIZE))
+        .with_min_inner_size(app::MIN_SIZE);
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("window icon: {e}"),
@@ -127,6 +156,7 @@ fn main() -> eframe::Result {
         viewport,
         // Beside the settings file, so a portable install keeps it too.
         persistence_path: Some(Config::dir().join("window.ron")),
+        persist_window: args.size.is_none(),
         ..Default::default()
     };
 
@@ -220,7 +250,14 @@ fn main() -> eframe::Result {
                 app.connect(call);
             }
             app.setup |= args.setup;
+            app.log_view |= args.log;
+            if let Some(style) = args.panel {
+                app.panel = style;
+                app.panel_trial = true;
+            }
             app.shots = args.shots.as_ref().map(std::path::PathBuf::from);
+            app.shot_set = args.shot_set.zip(args.shot_at);
+            app.pixel_size = args.size;
             app.quit_after = args.quit;
             Ok(Box::new(app))
         }),

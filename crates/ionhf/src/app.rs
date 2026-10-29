@@ -1,9 +1,8 @@
-//! The window: Ion as a modem. A header (call, state, lamps, Setup), the
-//! modem view or Setup; events from the engine and the Ion worker;
-//! settings saved as they change. Host programs (Ragtime, Pat, Winlink
-//! Express) do the talking.
+//! The window: Ion as a modem. A header (call, state, Log, Setup), the
+//! modem view (lamps, level, decode plot, waterfall, log) or Setup;
+//! events from the engine and the Ion worker; settings saved as they
+//! change. Host programs (Ragtime, Pat, Winlink Express) do the talking.
 
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -14,13 +13,19 @@ use crate::config::Config;
 use crate::engine::{Msg, Status, UiEvent};
 use crate::history::History;
 use crate::ion_engine::{IonCmd, IonEvent, IonHandle, IonStatus};
+use crate::logbook::{Kind, Logbook};
+use crate::panel::Style;
+use crate::plot::Plots;
 use crate::radio::{LoopCmd, RadioInfo, RadioThread};
 use crate::waterfall::{Band, Cursor, Waterfall};
 use crate::{theme, views};
 
-pub const SIZE: [f32; 2] = [640.0, 560.0];
-/// Lines kept in the notes.
-const LOG_LINES: usize = 300;
+pub const SIZE: [f32; 2] = [1100.0, 640.0];
+pub const MIN_SIZE: [f32; 2] = [640.0, 420.0];
+/// How long an activity lamp stays lit after what lit it, seconds.
+const FLASH_S: f64 = 3.0;
+/// The WARN lamp after a warning or error, seconds.
+const WARN_S: f64 = 60.0;
 
 pub struct Threads {
     pub engine: Option<std::thread::JoinHandle<()>>,
@@ -40,8 +45,21 @@ pub struct App {
     pub radio: RadioInfo,
     pub link: Option<IonStatus>,
     pub hist: History,
-    /// (UTC time, text) of what happened.
-    pub notes: VecDeque<(String, String)>,
+    pub logbook: Logbook,
+    pub plots: Plots,
+    /// Decode plots asked of the Ion worker.
+    plot_on: bool,
+    /// Until when (seconds since start) each activity lamp stays lit.
+    pub lit_until: Lit,
+    /// A host program is connected to the command port.
+    pub host_client: bool,
+    /// The level of our last broadcast burst.
+    pub bcast_level: Option<usize>,
+    /// The Log fills the window below the panel.
+    pub log_view: bool,
+    pub panel: Style,
+    /// `--panel` was given: the header says which style.
+    pub panel_trial: bool,
     /// The Call box while it is being edited.
     pub call_draft: Option<String>,
     /// Sound cards for Setup: read in the background (slow on some systems), once and on Rescan.
@@ -59,12 +77,30 @@ pub struct App {
     /// Screenshots to this folder every 15 s; quit after this many seconds.
     pub shots: Option<std::path::PathBuf>,
     pub quit_after: Option<f64>,
+    /// `--shot-set`: (name, seconds in).
+    pub shot_set: Option<(String, f64)>,
+    /// `--size`: the window in pixels, one point to a pixel.
+    pub pixel_size: Option<[f32; 2]>,
+    /// The zoom `--size` sets is not saved.
+    sized: bool,
+    shot_steps: Vec<(f64, ShotStep)>,
     started: Instant,
     next_shot: f64,
 }
 
-fn utc() -> String {
-    chrono::Utc::now().format("%H:%M:%S").to_string()
+/// Seconds since start until which each activity lamp stays lit.
+#[derive(Default)]
+pub struct Lit {
+    pub harq: f64,
+    pub retry: f64,
+    pub lost: f64,
+    pub warn: f64,
+    pub cw_id: f64,
+}
+
+enum ShotStep {
+    Set(Style, [f32; 2]),
+    Shoot(String),
 }
 
 impl App {
@@ -94,7 +130,15 @@ impl App {
             radio: RadioInfo::default(),
             link: None,
             hist: History::new(),
-            notes: VecDeque::new(),
+            logbook: Logbook::new(),
+            plots: Plots::default(),
+            plot_on: false,
+            lit_until: Lit::default(),
+            host_client: false,
+            bcast_level: None,
+            log_view: false,
+            panel: Style::default(),
+            panel_trial: false,
             call_draft: None,
             audio_devices: None,
             audio_scan: None,
@@ -107,6 +151,10 @@ impl App {
             restart: false,
             shots: None,
             quit_after: None,
+            shot_set: None,
+            pixel_size: None,
+            sized: false,
+            shot_steps: Vec::new(),
             started: Instant::now(),
             next_shot: 10.0,
             cfg,
@@ -136,11 +184,23 @@ impl App {
         let _ = self.threads.ion.cmds.send(c);
     }
 
+    /// A line for the log; "! ..." is an error.
     pub fn note(&mut self, text: impl Into<String>) {
-        if self.notes.len() >= LOG_LINES {
-            self.notes.pop_front();
+        let text = text.into();
+        match text.strip_prefix("! ") {
+            Some(e) => self.error(e),
+            None => self.logbook.push(Kind::Link, text),
         }
-        self.notes.push_back((utc(), text.into()));
+    }
+
+    fn error(&mut self, text: &str) {
+        self.lit_until.warn = self.now() + WARN_S;
+        self.logbook.push(Kind::Error, text);
+    }
+
+    /// Seconds since start.
+    pub fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
     }
 
     pub fn mark_dirty(&mut self) {
@@ -261,7 +321,7 @@ impl App {
                     let _ = self.spectrum_return.try_send(row);
                 }
                 UiEvent::Status(s) => self.status = s,
-                UiEvent::Warning(w) => self.note(format!("! {w}")),
+                UiEvent::Warning(w) => self.error(&w),
                 UiEvent::Radio(info) => {
                     if let Some(d) = info.drive {
                         self.cfg.drive = d;
@@ -269,7 +329,14 @@ impl App {
                     self.radio = info;
                 }
                 UiEvent::Ion(ev) => self.ion_event(ev),
-                UiEvent::Host(note) => self.note(note),
+                UiEvent::Host(note) => {
+                    if note.starts_with("Host connected") {
+                        self.host_client = true;
+                    } else if note.starts_with("Host disconnected") {
+                        self.host_client = false;
+                    }
+                    self.logbook.push(Kind::Host, note);
+                }
             }
         }
     }
@@ -281,7 +348,25 @@ impl App {
                     self.state_changed(self.last_state, &s);
                     self.last_state = s.state;
                 }
+                self.activity(&s);
                 self.hist.on_status(&s);
+                // The bursts, as History keeps them, into the log.
+                let rows = self.hist.rows.len().min(s.bursts.len());
+                for r in self.hist.rows.iter().skip(self.hist.rows.len() - rows) {
+                    let snr = r.snr.map_or(String::new(), |v| format!(" {v:+.0} dB"));
+                    let lost = if r.lost > 0 {
+                        format!(" lost {}", r.lost)
+                    } else {
+                        String::new()
+                    };
+                    let secs = if r.tx {
+                        format!(" {:.1} s", r.secs)
+                    } else {
+                        String::new()
+                    };
+                    let kind = if r.tx { Kind::Tx } else { Kind::Rx };
+                    self.logbook.push(kind, format!("{}{snr}{lost}{secs}", r.what));
+                }
                 if s.state == State::Connected {
                     self.hist.heard_peer(&s.peer.clone(), self.hist.last_here);
                 }
@@ -290,6 +375,7 @@ impl App {
             // With no host program attached, what a link brings has nowhere
             // to go: say how much.
             IonEvent::Received(bytes) => self.note(format!("{} received, no host", theme::bytes(bytes.len() as u64))),
+            IonEvent::Plot(p) => self.plots.push(p),
             IonEvent::Note(text) => {
                 let text = text.strip_prefix("Ion: ").unwrap_or(&text).to_string();
                 // The state pill already says so.
@@ -300,9 +386,38 @@ impl App {
         }
     }
 
+    /// Lights the activity lamps for what changed since the last status.
+    fn activity(&mut self, s: &IonStatus) {
+        let now = self.now();
+        if let Some(old) = &self.link {
+            let rose = |a: u32, b: u32| b > a;
+            if rose(old.increments_sent, s.increments_sent) || rose(old.harq_recovered, s.harq_recovered) {
+                self.lit_until.harq = now + FLASH_S;
+            }
+            if rose(old.frames_resent, s.frames_resent) {
+                self.lit_until.retry = now + FLASH_S;
+            }
+            if rose(old.codewords_failed, s.codewords_failed) {
+                self.lit_until.lost = now + FLASH_S;
+            }
+        }
+        for b in s.bursts.iter().filter(|b| b.tx) {
+            // A mid-link CW ID goes out ahead of a burst.
+            if b.what == "CW ID" {
+                self.lit_until.cw_id = now + b.secs;
+            }
+            if b.what.starts_with("BCAST") {
+                self.bcast_level = b.level;
+            }
+        }
+    }
+
     fn state_changed(&mut self, from: State, s: &IonStatus) {
         match s.state {
-            State::Connecting | State::Connected if from == State::Listening => self.hist.new_link(),
+            State::Connecting | State::Connected if from == State::Listening => {
+                self.hist.new_link();
+                self.plots.clear();
+            }
             State::Disconnected | State::Failed if self.cfg.answer => self.cmd(IonCmd::Listen),
             _ => {}
         }
@@ -315,25 +430,36 @@ impl App {
             ui.spacing_mut().item_spacing.x = 10.0;
             ui.label(RichText::new("ION HF").strong().size(15.0).color(theme::TEXT));
             ui.label(RichText::new(&self.cfg.call).monospace().color(theme::MUTED));
-            let arq = matches!(
-                self.state(),
-                State::Connecting | State::Connected | State::Disconnecting
-            );
-            let groups = self.link.as_ref().is_some_and(|s| !s.groups.is_empty());
-            theme::mode_pair(ui, arq, groups && !arq, groups && arq);
             let (color, text, detail) = self.state_pill();
             theme::pill(ui, color, &text, &detail);
+            if self.linked() {
+                // Abort (Esc) drops the link without transmitting.
+                if ui.button("Disconnect").clicked() {
+                    self.cmd(IonCmd::Disconnect);
+                }
+                if ui.button(RichText::new("Abort").color(theme::BAD)).clicked() {
+                    self.abort();
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let label = if self.setup { "Done" } else { "Setup" };
                 if ui.selectable_label(self.setup, label).clicked() {
                     self.setup = !self.setup;
                 }
-                ui.add_space(4.0);
-                let busy = self.link.as_ref().is_some_and(|s| s.busy);
-                theme::lamp(ui, "Host", self.host_on(), theme::NET);
-                theme::lamp(ui, "RX", busy && !self.status.keyed, theme::OK);
-                theme::lamp(ui, "TX", self.status.keyed, theme::TX);
+                if ui.selectable_label(self.log_view && !self.setup, "Log").clicked() {
+                    self.log_view = !(self.log_view && !self.setup);
+                    self.setup = false;
+                }
+                if self.panel_trial {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("PANEL {}", self.panel.letter()))
+                            .monospace()
+                            .strong()
+                            .color(theme::WARN),
+                    );
+                }
             });
         });
     }
@@ -361,28 +487,59 @@ impl App {
         }
     }
 
-    /// `--shots` and `--quit`: a screenshot when one is due (saved as it
-    /// arrives), and close when the time is up.
+    /// `--size`, `--shots`, `--shot-set` and `--quit`: a window of so many
+    /// pixels, screenshots when they are due (saved as they arrive), and
+    /// close when the time is up.
     fn scripted(&mut self, ctx: &egui::Context) {
-        let t = self.started.elapsed().as_secs_f64();
+        let t = self.now();
+        if let Some(px) = self.pixel_size.take() {
+            self.size_pixels(ctx, px);
+        }
+        if let Some((name, at)) = self.shot_set.take() {
+            // Each style at each size, a second and a half to settle.
+            let mut when = at;
+            for style in [Style::A, Style::B] {
+                for px in [[1280.0, 720.0], [1920.0, 1080.0]] {
+                    self.shot_steps.push((when, ShotStep::Set(style, px)));
+                    let file = format!("{}_{name}_{}.png", style.letter(), px[0] as u32);
+                    self.shot_steps.push((when + 1.5, ShotStep::Shoot(file)));
+                    when += 2.0;
+                }
+            }
+            self.next_shot = f64::INFINITY;
+        }
+        while self.shot_steps.first().is_some_and(|(at, _)| t >= *at) {
+            match self.shot_steps.remove(0).1 {
+                ShotStep::Set(style, px) => {
+                    self.panel = style;
+                    self.panel_trial = true;
+                    self.size_pixels(ctx, px);
+                }
+                ShotStep::Shoot(file) => {
+                    if let Some(dir) = &self.shots {
+                        shoot(ctx, dir.join(file));
+                    }
+                }
+            }
+        }
         if let Some(dir) = &self.shots
             && t >= self.next_shot
         {
             self.next_shot += 15.0;
-            let path = dir.join(format!("ion_{:03}s.png", t as u64));
-            ctx.request_screenshot(move |img| {
-                let [w, h] = img.size;
-                let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-                if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
-                    && let Err(e) = buf.save(&path)
-                {
-                    log::warn!("{}: {e}", path.display());
-                }
-            });
+            shoot(ctx, dir.join(format!("ion_{:03}s.png", t as u64)));
         }
         if self.quit_after.is_some_and(|q| t >= q) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// The window at `px` pixels, one point to a pixel whatever the
+    /// display's scaling.
+    fn size_pixels(&mut self, ctx: &egui::Context, px: [f32; 2]) {
+        self.sized = true;
+        let native = ctx.native_pixels_per_point().unwrap_or(1.0);
+        ctx.set_zoom_factor(1.0 / native);
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(px[0], px[1]) / native));
     }
 
     /// What the link has on the air: on a slice level, the third the
@@ -445,11 +602,28 @@ impl App {
     }
 }
 
+fn shoot(ctx: &egui::Context, path: std::path::PathBuf) {
+    ctx.request_screenshot(move |img| {
+        let [w, h] = img.size;
+        let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+        if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+            && let Err(e) = buf.save(&path)
+        {
+            log::warn!("{}: {e}", path.display());
+        }
+    });
+}
+
 impl eframe::App for App {
+    fn persist_egui_memory(&self) -> bool {
+        !self.sized
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Esc in the log's search box only leaves the box.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && ctx.memory(|m| m.focused().is_none()) {
             self.abort();
         }
         self.scripted(&ctx);
@@ -460,9 +634,26 @@ impl eframe::App for App {
                     .inner_margin(Margin::symmetric(12, 8)),
             )
             .show(ui, |ui| self.header(ui));
+        // Decode plots only while the modem screen shows.
+        if self.plot_on == self.setup {
+            self.plot_on = !self.setup;
+            self.cmd(IonCmd::Plot(self.plot_on));
+        }
         if self.setup {
             views::setup::show(self, ui);
         } else {
+            if !self.log_view {
+                egui::Panel::bottom("log")
+                    .resizable(true)
+                    .default_size(230.0)
+                    .min_size(120.0)
+                    .frame(
+                        egui::Frame::new()
+                            .fill(theme::BG)
+                            .inner_margin(Margin::symmetric(12, 8)),
+                    )
+                    .show(ui, |ui| self.logbook.show(ui));
+            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(theme::BG).inner_margin(Margin::same(12)))
                 .show(ui, |ui| views::modem::show(self, ui));

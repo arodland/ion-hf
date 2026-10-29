@@ -13,8 +13,6 @@ const HEARD: usize = 40;
 
 /// One burst, for the Log.
 pub struct Row {
-    /// Seconds into the link.
-    pub t: f64,
     pub tx: bool,
     pub what: String,
     pub snr: Option<f32>,
@@ -99,7 +97,8 @@ impl History {
     pub fn on_status(&mut self, s: &IonStatus) {
         let t = self.t();
         for b in &s.bursts {
-            if let Some(l) = b.level {
+            // Broadcast bursts are not the link's.
+            if let Some(l) = b.level.filter(|_| !b.what.starts_with("BCAST")) {
                 if b.tx {
                     self.us_levels.push((t, l as f32));
                 } else {
@@ -125,7 +124,6 @@ impl History {
                 self.rows.pop_front();
             }
             self.rows.push_back(Row {
-                t,
                 tx: b.tx,
                 what: b.what.clone(),
                 snr: b.snr_db,
