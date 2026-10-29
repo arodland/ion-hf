@@ -46,7 +46,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force "dist/$env:NAME" | Out-Null
           Copy-Item target/release/ionhf.exe "dist/$env:NAME/"
-          Copy-Item packaging/README.txt, LICENSE "dist/$env:NAME/"
+          Copy-Item packaging/README.txt, LICENSE, NOTICE "dist/$env:NAME/"
           Compress-Archive -Path "dist/$env:NAME" -DestinationPath "dist/$env:NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -106,7 +106,7 @@ jobs:
           EOF
           plutil -lint "$APP/Contents/Info.plist"
           codesign --force --deep --sign - "$APP"
-          cp packaging/README.txt LICENSE dist/root/
+          cp packaging/README.txt LICENSE NOTICE dist/root/
           ln -s /Applications dist/root/Applications
           hdiutil create -volname "Ion HF" -srcfolder dist/root -ov -format UDZO "dist/$NAME.dmg"
       - uses: actions/upload-artifact@v4
@@ -134,7 +134,7 @@ jobs:
       - name: Tarball
         run: |
           mkdir -p "dist/$NAME"
-          cp target/release/ionhf packaging/README.txt LICENSE "dist/$NAME/"
+          cp target/release/ionhf packaging/README.txt LICENSE NOTICE "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
       - name: Debian package
         run: |

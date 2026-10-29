@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If Ion HF's code or ideas help your project, please credit Ion HF by Jesse Forkum, N0JLF."
+title: "Ion HF"
+type: software
+authors:
+  - family-names: Forkum
+    given-names: Jesse
+    alias: N0JLF
+repository-code: "https://github.com/jesseforkum/ion-hf"
+license: Apache-2.0

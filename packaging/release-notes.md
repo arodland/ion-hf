@@ -35,3 +35,7 @@ Ion answers calls on its own while no link is up. All stations in a test need th
 ## Report problems
 
 Open an issue with what you did, what happened, your system and radio, and `ion.log` from the settings folder (see `README.txt` in the download).
+
+## Licence
+
+Ion HF is now licensed under Apache-2.0 (LICENSE, with the credit in NOTICE). Releases up to 0.1.0-alpha.4 were GPL-3.0-or-later and stay so.

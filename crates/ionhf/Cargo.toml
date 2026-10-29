@@ -2,7 +2,7 @@
 name = "ionhf"
 version = "0.1.0-alpha.4"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
@@ -40,4 +40,5 @@ assets = [
     ["../../packaging/linux/ionhf.desktop", "usr/share/applications/", "644"],
     ["assets/icon.png", "usr/share/icons/hicolor/256x256/apps/ionhf.png", "644"],
     ["../../packaging/README.txt", "usr/share/doc/ionhf/", "644"],
+    ["../../NOTICE", "usr/share/doc/ionhf/", "644"],
 ]

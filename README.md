@@ -90,6 +90,10 @@ from the tests and tools in this repository.
 
 ## Licence
 
-GPL-3.0-or-later; see [LICENSE](LICENSE).
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Anything built on
+Ion's code carries the NOTICE file with it. If Ion's code or ideas help
+your project, please credit "Ion HF by Jesse Forkum, N0JLF"
+([CITATION.cff](CITATION.cff)). Releases up to 0.1.0-alpha.4 were
+GPL-3.0-or-later and stay so.
 
 Jesse Forkum, N0JLF

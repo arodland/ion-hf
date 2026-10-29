@@ -36,4 +36,4 @@ On the air
 Ion sends a CW ID at the end of every link and every 9.5 minutes during
 one. Esc or Abort stops it transmitting at any time.
 
-GPL-3.0-or-later. N0JLF.
+Apache-2.0, see LICENSE and NOTICE. N0JLF.
