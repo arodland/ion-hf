@@ -203,6 +203,7 @@ impl Node {
             return;
         }
         self.bursts.clear();
+        self.rx.expect(&self.station.expected());
         self.rx.process(samples, &mut self.bursts);
         for inc in std::mem::take(&mut self.bursts) {
             self.bursts_heard += 1;

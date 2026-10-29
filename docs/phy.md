@@ -123,7 +123,7 @@ and is left to the MFSK floor.
 | A | 352 samples (44 ms), period 40 (5 ms): 13 carriers every 200 Hz | 640 samples (80 ms), period 64 (8 ms): 19 carriers every 125 Hz (bins ≡ 0 mod 5) | A period unrelated to 5 ms (next section); pull-in ±62.5 Hz (tested ±50 Hz); 78 empty bins for the noise estimate |
 | Detector window, thresholds | 264; M_ON 0.035, B 0.06, preamble 0.08 | 480 (A − period − ramp − CP); 0.02, 0.05, 0.055 | Longer windows, lower noise floor; M_ON 0.035 missed a quarter of CCIR-poor bursts at −2 dB that sat in an 8 dB fade |
 | Timing: energy window, back-off, plateau | 24, 4 samples, 95% | 68, 6 samples, **99%** | See below |
-| Channel model grid (fd × delay span) | {0.3, 1, 2.5} Hz × {1, 2, 4} ms | {0.3, 1, 2} Hz × {2, 5, 10} ms | |
+| Channel model grid (fd × delay span) | {0.3, 1, 2.5} Hz × {1, 2, 6} ms | {0.3, 1, 2} Hz × {2, 5, 10} ms | |
 | `overhead_s` | 176 ms | 242 ms | |
 | Header-only burst | 272 ms | 342 ms | |
 | Longest burst (1023 symbols) | 24.6 s | 51.4 s | |
@@ -610,7 +610,10 @@ noise over ±4).
      exceed ρ = 0.06, a cheap pre-filter);
    - timing: the 24-sample window that captures the most matched-filter
      energy (middle of its plateau); the FFT window starts 4 samples
-     before it, so any channel whose energy fits in 3.5 ms is ISI-free;
+     before it, so any channel whose energy fits in 3.5 ms is ISI-free.
+     Normal guard only: when an echo lies further out than the energy
+     window holds, the placement is corrected and followed through the
+     burst (see Echoes near the cyclic prefix);
    - frequency: lag 40 → 80 → 160 autocorrelation chain over A's clean
      part, then a data-aided fit of the phase slope of A+B (64 ms of known
      signal) in six segments, worth ~1 dB of header sensitivity at low
@@ -631,7 +634,8 @@ noise over ±4).
    no frequency correction here: one from B and the header pilots is
    noisier at low SNR than the preamble estimate (it cost about 1.5 dB of
    header sensitivity); the Wiener model absorbs the residual and the data
-   stage tracks it over the burst.
+   stage tracks it over the burst. Inside a link, a header that fails is
+   tested against the headers the link expects (see Expected headers).
 5. **Data**, when the last symbol has arrived (`phy/rx/demod.rs`):
    - residual frequency: products of pilot pairs 4 symbols apart, in
      blocks of 8 symbols, unwrapped block to block (pilot pairs alias every
@@ -642,7 +646,7 @@ noise over ±4).
      pilots (Hoeher, Kaiser & Robertson 1997), real sinc correlation model
      with a uniform delay profile and a uniform Doppler spectrum (the
      "robust" design of Li, Cimini & Sollenberger 1998). Every burst picks
-     (Doppler, delay span) from {0.3, 1, 2.5} Hz × {1, 2, 4} ms by
+     (Doppler, delay span) from {0.3, 1, 2.5} Hz × {1, 2, 6} ms by
      leave-one-out cross-validation on its own pilots. The weights are
      rescaled to unit sum (the plain MMSE weights shrink the estimate,
      which biases 16QAM), and the error variance is computed exactly for
@@ -729,6 +733,159 @@ poor the second path walks out of the CP at 60 ppm already. Tracked, the
 BER is that of a 0 ppm burst everywhere up to 200 ppm.
 `sample_clock_drift_100ppm` checks ±100 ppm on Normal, NormalWide and
 LongWide and that a clean clock is left alone.
+
+### Echoes near the cyclic prefix
+
+On a two-path channel whose echo is about as long as Normal's 4 ms CP
+(IONOS MPD: 4 ms, 2 Hz), B's matched filter shows the paths 31–32
+samples apart. The 24-sample energy window holds only one of them, and
+its plateau rule put the FFT window before whichever was stronger at
+sync, so the other one arrived up to 17 samples before the window or past
+the CP and all of it turned into ISI: Normal QPSK 1/2 did not reach 10%
+codeword loss at any S:N. Three receiver-only changes, on the Normal
+guard (`phy/rx.rs`, `phy/rx/retime.rs`):
+
+- **Placement at sync.** Every window start is scored by the leakage it
+  leaves: a path `k` samples before the window or past the CP leaks about
+  `k/n` of its energy, weighted by the matched filter's power over the
+  lags within 6 dB of the strongest. When the energy window's placement
+  costs more than 3 samples of such leakage beyond the best placement,
+  the placement within a sample of the best nearest it is taken. With
+  every path inside the energy window nothing changes. (With lags within
+  10 dB and a one-sample tolerance, as first built, noise lags moved the
+  window on MPP near its threshold.) `RxStats::placed` counts the moves.
+- **Re-timing during the burst.** A path faded at sync (either can be
+  20 dB down for a few hundred ms) is not seen there. Each path repeats
+  its CP `n` samples later, so `y[t]·y*[t+n]` around each symbol's
+  window, averaged over about 14 symbols (forgetting factor 0.93, from
+  the first header symbol: B is skipped because A before it repeats with
+  a period dividing `n`), is a box `[a − cp, a)` per path arriving at
+  `a`. The run over half its height around the peak bounds the earliest
+  and latest path (only that run: noise elsewhere crosses the threshold
+  in short spikes, and taking the first and last crossing anywhere stepped
+  the window on noise and cost 0.1 dB on WGN). When the window must move
+  by 4 samples or more to put every path within `[w, w + cp]`, it steps
+  at most 4 samples a symbol, through the same mechanism as the clock
+  drift steps (the grid kept as if the window had not moved).
+  `RxStats::retime_steps` counts the steps.
+- **Re-reference.** Before the data stage the grid is rotated to the
+  burst's mean window, so the Wiener model (centred on the window) sees
+  the paths inside its delay span; without this the re-timing made things
+  worse. Normal's delay-span grid goes to {1, 2, 6} ms: an echo at the
+  CP's length plus the filters' tails once the window straddles both
+  paths (on its own it changes nothing on WGN, MPG or MPP).
+
+Long keeps the plateau rule: its 10 ms CP already holds every echo the
+energy window can, and the changes moved nothing there. The slice keeps
+it too: 13 carriers do not resolve paths to the sample.
+`set_legacy_timing(true)` (test hook) gives the old placement on Normal,
+`set_retiming(false)` turns the re-timing off.
+
+Measured (`tests/rx_lab.rs`, `timing_fer`: Normal QPSK 1/2 bursts of 8 s
+as the link sends them, IONOS 2 paths, S:N in 3 kHz against a sine at
+the peak, 60 bursts per point, both receivers on the same audio, the
+real header decode), S:N at 10% / 30% / 50% codeword loss:
+
+| | WGN | MPG | MPP | MPD |
+|---|---:|---:|---:|---:|
+| Plateau rule only | 4.8 / 4.4 / 4.2 | 9.8 / 6.7 / 5.6 | 7.7 / 6.8 / 6.2 | > 20 (97% lost at 20 dB) |
+| With placement and re-timing | 4.8 / 4.4 / 4.2 | 9.8 / 6.7 / 5.6 | 7.7 / 6.8 / 6.2 | **10.6 / 8.6 / < 8** |
+
+Every WGN, MPG and MPP point is within one codeword of the plateau rule
+(three codewords in 540 at two MPG points); MPD has a floor of 2–7%
+of codewords lost in bursts that fade whole.
+
+### Iterative data stage
+
+Each data burst carries a snapshot of what its data stage saw
+(`RxBurst::grid`: the drift- and phase-corrected grid, the preamble's
+noise per carrier and the noise each data cell was demapped with), so
+the link can decode it again with what the decoder learnt while the
+receiver goes on to the next burst. `BurstGrid::refine(prior, k)` takes
+an LLR per data bit and returns new LLRs (`phy/rx/refine.rs`):
+
+- **Channel estimate.** Every data cell becomes a pilot too: its
+  expected value under the prior `x̄` with noise `σ² + p_h·Var[x]`
+  (Valenti & Woerner 2001; Sandell et al. 1998); cells whose expected
+  value carries less than 10% of the constellation's energy are left
+  out. The Wiener model is chosen again by cross-validation and each
+  estimate takes 40 pilots (`REFINE_K`), leaving the cell's own sample
+  out.
+- **Equaliser** (DFT-spread levels). Soft interference cancellation in
+  the frequency domain (Tüchler & Singer 2011): each despread symbol is
+  equalised with the expected values of the others taken out and an
+  MMSE filter for what remains uncertain. The decoder's posteriors work
+  better here than its extrinsics (receiver experiment, `exp-rx`): the
+  filter removes each symbol's own expected value with the others and
+  puts it back, and the channel estimate leaves each cell's own sample
+  out, so a posterior feeds back on itself only weakly.
+
+Measured (`tests/rx_lab.rs`, `turbo_fer`: Normal QPSK 1/2, 8 s bursts,
+IONOS 2 paths, 30 bursts per point, the station's path
+`HarqRx::receive_turbo` with 0, 1, 2 and 4 passes on the same audio),
+S:N at 10% / 30% / 50% codeword loss:
+
+| Passes | WGN | MPG | MPP | MPD |
+|---|---:|---:|---:|---:|
+| 0 | 4.9 / 4.5 / 4.3 | 10.1 / 7.7 / 6.5 | 7.3 / 6.7 / 6.2 | 10.0 / 8.2 / < 8 |
+| 1 | 4.9 / 4.4 / 4.3 | 9.9 / 7.1 / 6.2 | 7.0 / 6.1 / 5.5 | 10.0 / < 8 / < 8 |
+| 2 | 4.9 / 4.4 / 4.3 | 9.7 / 7.1 / 6.2 | 7.0 / 5.7 / 5.3 | 10.0 / < 8 / < 8 |
+| 4 | 4.9 / 4.4 / 4.3 | 9.2 / 7.1 / 6.2 | 7.0 / 5.6 / 5.2 | 10.0 / < 8 / < 8 |
+
+MPD at 8 dB: 34% of codewords lost without, 13–14% with. A pass took
+about 180 ms on an 8 s burst (one core of the test machine, six busy).
+
+### Expected headers
+
+Near 0 dB the header, not detection, is what loses a burst: at 0 dB on
+WGN about half of Normal QPSK 1/3 bursts sync and then fail the header
+CRC. Inside a link the receiver knows most of the next header (session,
+the levels the sender uses, the burst number, the HARQ check bits, the
+frame counts it may send). The station lists those headers
+(`Station::expected`, [link.md](link.md#expected-headers)) and each OFDM
+receiver keeps those of its numerology (`PhyRx::expect`, a few hundred at
+most). When a header fails its check, each expected header's code
+sequence `s` (±1 per coded bit) is correlated with the combined header
+LLRs `L`; the best is taken if
+
+- its score `Σ s·L / ‖L‖` is at least 5 (`HYP_Z`): on noise every
+  header's score is a unit Gaussian, so a few hundred headers pass once
+  in about 10⁴ failed headers on noise, and noise rarely syncs at all;
+- it lies within 30 nats (`HYP_MARGIN`) of the likeliest code sequence,
+  the Viterbi decision that failed the check (`½ Σ (s_ml − s)·L`, LLRs
+  being ln P(0)/P(1)). A burst whose header is not expected, another
+  station's or one of ours with other fields, is explained far better by
+  its own header, at least the code's free distance (64 coded bits) away.
+  True headers taken in the measurements below lay at most 24.4 nats
+  below the decision (median 7.5–8).
+
+Data headers are tried on the first header copy, header-only ones on the
+two-copy retry. Outside a link the set is empty and nothing changes.
+`RxStats::header_expected` counts the headers taken.
+
+Measured (`tests/rx_lab.rs`, `hdr_floor`: 8 s bursts, IONOS 2 paths,
+60 per point, the set a station holds for the guard's levels up to
+5 dB with nothing stored, plus every tiny kind it can expect: 125
+headers for Normal, 95 for Long), S:N where 10% of bursts are lost
+before the data:
+
+| | WGN | MPG | MPP |
+|---|---:|---:|---:|
+| Normal QPSK 1/3, plain | 1.4 | 6.0 | 5.5 |
+| Normal QPSK 1/3, expected headers | 0.0 | 3.5 | 3.2 |
+| Long QPSK 1/4, plain | 1.3 | 5.3 | 5.0 |
+| Long QPSK 1/4, expected headers | −0.8 | 2.0 | 3.0 |
+
+No wrong header was taken there, data or header-only (the header-only
+set is tried on the two-copy retry of every burst whose header failed,
+where the second copy is data), nor (`hdr_false_long`) from 2880 bursts
+per guard of another link (another session) or of our own link with
+unexpected check bits, at −3 to +9 dB on WGN and MPP, even with no
+margin limit at all (data headers only, first run); 20 minutes of noise
+per guard never synced.
+`expected_headers_on_noise_and_weak_signal` (unit test) puts 1000 header
+LLR vectors of pure noise against 500 expected headers (none passes) and
+finds the true header from LLRs too weak for the Viterbi decision alone.
 
 ### Long echoes and the channel measurement
 

@@ -1,0 +1,98 @@
+
+running 1 test
+MPP +0 dB seed 1: 5270 B, 1054 B/min
+MPP +0 dB seed 4: 2890 B, 578 B/min
+MPP +0 dB seed 2: 2344 B, 469 B/min
+MPP +0 dB seed 5: 2210 B, 442 B/min
+MPP +0 dB seed 0: 2606 B, 521 B/min
+MPP +0 dB seed 3: 3598 B, 720 B/min
+MPD +0 dB seed 0: 1564 B, 313 B/min
+MPD +0 dB seed 1: 1674 B, 335 B/min
+MPD +0 dB seed 2: 2880 B, 576 B/min
+MPD +0 dB seed 3: 2438 B, 488 B/min
+MPD +0 dB seed 4: 2394 B, 479 B/min
+MPD +0 dB seed 5: 2454 B, 491 B/min
+MPP +3 dB seed 0: 9690 B, 1938 B/min
+MPP +3 dB seed 1: 7310 B, 1462 B/min
+MPP +3 dB seed 2: 8840 B, 1768 B/min
+MPP +3 dB seed 3: 10710 B, 2142 B/min
+MPP +3 dB seed 5: 11390 B, 2278 B/min
+MPP +3 dB seed 4: 14110 B, 2822 B/min
+MPD +3 dB seed 0: 3664 B, 733 B/min
+MPD +3 dB seed 1: 2740 B, 548 B/min
+MPD +3 dB seed 2: 3944 B, 789 B/min
+MPD +3 dB seed 3: 2140 B, 428 B/min
+MPD +3 dB seed 4: 1602 B, 320 B/min
+MPD +3 dB seed 5: 2480 B, 496 B/min
+MPP +6 dB seed 0: 23630 B, 4726 B/min
+MPP +6 dB seed 1: 22100 B, 4420 B/min
+MPP +6 dB seed 2: 19210 B, 3842 B/min
+MPP +6 dB seed 3: 20400 B, 4080 B/min
+MPP +6 dB seed 4: 22270 B, 4454 B/min
+MPP +6 dB seed 5: 22780 B, 4556 B/min
+MPD +6 dB seed 0: 5528 B, 1106 B/min
+MPD +6 dB seed 1: 2720 B, 544 B/min
+MPD +6 dB seed 2: 6254 B, 1251 B/min
+MPD +6 dB seed 3: 14834 B, 2967 B/min
+MPD +6 dB seed 4: 4508 B, 902 B/min
+MPD +6 dB seed 5: 5950 B, 1190 B/min
+
+Ion on IONOS SIM, 2 paths, S:N in 3 kHz against a sine at each burst's peak; 5 min per run, bytes/min (bit/s):
+| S:N dB | MPP | MPD |
+|---:|---:|---:|
+| 6 | 4346 (580) | 1326 (177) |
+| 3 | 2068 (276) | 552 (74) |
+| 0 | 631 (84) | 447 (60) |
+
+Air time, MPP 0 dB:
+| Level | data bursts | s per cycle | data | preamble | ACK | other control | gaps |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2 R1 1/3 | 1 | 10.30 | 42% | 34% | 17% | 0% | 6% |
+| 3 R1 1/2 | 14 | 9.30 | 47% | 30% | 17% | 0% | 6% |
+| 4 R1 2/3 | 34 | 10.16 | 54% | 24% | 16% | 0% | 6% |
+| 5 slice 1/3 | 70 | 13.82 | 66% | 5% | 10% | 2% | 16% |
+| 6 slice 1/2 | 10 | 10.41 | 66% | 7% | 14% | 1% | 12% |
+| 7 long 1/4 | 5 | 13.94 | 47% | 2% | 12% | 1% | 37% |
+| 8 long 1/2 | 1 | 32.09 | 23% | 1% | 6% | 5% | 66% |
+| 9 Qpsk 1/3 | 5 | 17.82 | 40% | 1% | 8% | 1% | 50% |
+| all | 140 | 12.49 | 59% | 11% | 12% | 2% | 17% |
+
+Air time, MPD 0 dB:
+| Level | data bursts | s per cycle | data | preamble | ACK | other control | gaps |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3 R1 1/2 | 28 | 10.22 | 52% | 27% | 15% | 0% | 6% |
+| 4 R1 2/3 | 88 | 9.90 | 55% | 25% | 14% | 0% | 6% |
+| 5 slice 1/3 | 20 | 15.21 | 32% | 5% | 11% | 6% | 46% |
+| 6 slice 1/2 | 6 | 16.01 | 43% | 4% | 15% | 5% | 33% |
+| 7 long 1/4 | 3 | 19.83 | 33% | 1% | 9% | 2% | 55% |
+| 8 long 1/2 | 2 | 22.28 | 33% | 1% | 13% | 3% | 49% |
+| 9 Qpsk 1/3 | 5 | 21.01 | 34% | 1% | 9% | 3% | 54% |
+| all | 152 | 11.62 | 47% | 18% | 13% | 2% | 20% |
+
+Air time, MPP 3 dB:
+| Level | data bursts | s per cycle | data | preamble | ACK | other control | gaps |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3 R1 1/2 | 2 | 9.23 | 47% | 30% | 16% | 0% | 7% |
+| 4 R1 2/3 | 3 | 10.08 | 54% | 24% | 16% | 0% | 6% |
+| 5 slice 1/3 | 18 | 11.14 | 66% | 6% | 10% | 2% | 16% |
+| 6 slice 1/2 | 58 | 13.11 | 81% | 5% | 9% | 0% | 5% |
+| 7 long 1/4 | 53 | 9.94 | 75% | 3% | 11% | 1% | 11% |
+| 8 long 1/2 | 14 | 15.89 | 46% | 2% | 23% | 2% | 27% |
+| 9 Qpsk 1/3 | 2 | 8.14 | 87% | 2% | 3% | 0% | 8% |
+| all | 150 | 11.84 | 72% | 5% | 12% | 1% | 11% |
+
+Air time, MPD 3 dB:
+| Level | data bursts | s per cycle | data | preamble | ACK | other control | gaps |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3 R1 1/2 | 42 | 10.65 | 55% | 26% | 14% | 0% | 5% |
+| 4 R1 2/3 | 60 | 9.78 | 56% | 25% | 13% | 0% | 6% |
+| 5 slice 1/3 | 18 | 8.49 | 54% | 8% | 16% | 2% | 20% |
+| 6 slice 1/2 | 7 | 15.49 | 44% | 4% | 15% | 4% | 32% |
+| 7 long 1/4 | 33 | 12.08 | 57% | 2% | 11% | 1% | 28% |
+| 8 long 1/2 | 2 | 14.40 | 51% | 2% | 32% | 1% | 14% |
+| 9 Qpsk 1/3 | 5 | 9.39 | 75% | 2% | 10% | 1% | 12% |
+| all | 167 | 10.60 | 55% | 17% | 14% | 1% | 14% |
+test ionos_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 322.14s
+

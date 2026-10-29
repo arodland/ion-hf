@@ -187,7 +187,9 @@ pub const NORMAL: Layout = Layout {
     dd_half: 2,
     fd: [0.3, 1.0, 2.5],
     fd_sparse: [0.3, 1.0, 2.0],
-    tm: [8.0, 16.0, 32.0],
+    // Up to 6 ms: an echo at the CP's length (MPD's 4 ms) plus the
+    // filters' tails, once the window straddles both paths.
+    tm: [8.0, 16.0, 48.0],
     gw: 12,
     cw: 12,
     est_k: 20,

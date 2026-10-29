@@ -2,6 +2,7 @@
 //! data stage is in [`demod`], clock-drift tracking in [`drift`].
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use ion_dsp::dsp::{AUDIO_RATE, Complex, Decimator, Nco};
 
@@ -15,8 +16,11 @@ use super::{Constellation, HO_COPIES, Numerology, Pilots, check_center, front_en
 
 mod demod;
 mod drift;
+mod refine;
+mod retime;
 
 use drift::Drift;
+pub use refine::{BurstGrid, REFINE_K};
 
 /// One received burst.
 #[derive(Clone, Debug)]
@@ -54,6 +58,9 @@ pub struct RxBurst {
     pub chan: ChannelMeas,
     /// How the data symbols were sent (from the header).
     pub mode: DataMode,
+    /// Data bursts: what the data stage saw, to decode the burst again
+    /// with what the decoder learnt ([`BurstGrid::refine`]).
+    pub grid: Option<Arc<BurstGrid>>,
 }
 
 /// Receiver counters.
@@ -71,7 +78,37 @@ pub struct RxStats {
     /// anyway when the cue is trusted).
     pub cues: u64,
     pub cue_sync_fail: u64,
+    pub placed: u64,
+    pub retime_steps: u64,
+    /// Headers taken from the expected set after a failed check, and the
+    /// last test's score (noise deviations) and distance from the
+    /// likeliest code sequence (nats).
+    pub header_expected: u64,
+    pub hyp_z: f32,
+    pub hyp_margin: f32,
 }
+
+/// A header the receiver expects ([`PhyRx::expect`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpectedHeader {
+    pub constellation: Constellation,
+    /// Data symbols; 0 for a header-only burst.
+    pub data_symbols: usize,
+    pub user: u16,
+    /// A header-only burst's 16 extra bits (0 for a data burst).
+    pub extra: u16,
+    pub pilots: Pilots,
+    pub mode: DataMode,
+}
+
+/// Score an expected header needs, noise standard deviations: on noise
+/// each header's score is a unit Gaussian, so a few hundred headers pass
+/// it about once in 10^4 failed headers, and noise rarely gets as far as
+/// a header at all.
+pub const HYP_Z: f32 = 5.0;
+/// How far below the likeliest code sequence (the Viterbi decision, which
+/// failed the check) an expected header may score, nats.
+pub const HYP_MARGIN: f32 = 30.0;
 
 /// Ring buffer of baseband samples (2.05 s).
 const RING: usize = 1 << 14;
@@ -134,10 +171,17 @@ pub struct PhyRx {
     sigma2: [f32; NC_MAX],
     /// Pilot map of the current burst (robust until the header is known).
     map: Map,
-    /// FFT window shift of each grid symbol, samples (clock drift).
+    /// FFT window shift of each grid symbol, samples (clock drift plus
+    /// re-timing), and the re-timing part alone.
     wshift: Vec<i32>,
+    rshift: Vec<i32>,
     drift: Drift,
     track_drift: bool,
+    /// CP correlation around the window, for re-timing during a burst.
+    cpm: Vec<Complex>,
+    cpm_n: usize,
+    retiming: bool,
+    legacy_timing: bool,
     /// Impulse blanker on the audio, how many of the DEC audio samples
     /// around each baseband sample it zeroed (ring like `ring`), and the
     /// blanked fraction of each grid symbol's FFT window.
@@ -170,6 +214,11 @@ pub struct PhyRx {
     /// The burst under way was taken on its cue alone (its preamble
     /// check failed): its delay and Doppler measurements are not reported.
     weak_sync: bool,
+    /// Headers the link expects, and each one's header and code sequence
+    /// (±1 per coded bit).
+    expected: Vec<ExpectedHeader>,
+    hyps: Vec<(Header, [f32; HDR_CODED])>,
+    hyp_margin: f32,
     stats: RxStats,
     debug: Option<Vec<CellDebug>>,
     rho_log: Option<Vec<f32>>,
@@ -227,6 +276,11 @@ pub struct CellDebug {
     pub h: Complex,
     pub mse: f32,
     pub sigma2: f32,
+}
+
+/// A code sequence as ±1 (bit 0 → +1, as LLRs ln P(0)/P(1) lean).
+fn signs(c: &[u8; HDR_CODED]) -> [f32; HDR_CODED] {
+    std::array::from_fn(|j| 1.0 - 2.0 * c[j] as f32)
 }
 
 /// Known value of cell (`c`, `g`) under `map`, or `None` for a data cell.
@@ -294,8 +348,16 @@ impl PhyRx {
             sigma2: [0.0; NC_MAX],
             map: Map::new(l, l.pre_syms(), Pilots::Robust),
             wshift: vec![0; max_g],
+            rshift: vec![0; max_g],
             drift: Drift::default(),
             track_drift: true,
+            cpm: vec![Complex::ZERO; 4 * l.cp],
+            cpm_n: 0,
+            // Only the Normal guard: Long's CP holds every echo the
+            // energy window can, and the slice's 13 carriers do not
+            // resolve paths to the sample.
+            retiming: matches!(num, Numerology::Normal | Numerology::NormalWide),
+            legacy_timing: !matches!(num, Numerology::Normal | Numerology::NormalWide),
             blanker: Blanker::new(center_hz),
             blanked: vec![0; RING],
             bfrac: vec![0.0; max_g],
@@ -318,6 +380,9 @@ impl PhyRx {
             cue: None,
             cue_n_pk: 0,
             weak_sync: false,
+            expected: Vec::new(),
+            hyps: Vec::new(),
+            hyp_margin: HYP_MARGIN,
             stats: RxStats::default(),
             debug: None,
             rho_log: None,
@@ -366,6 +431,50 @@ impl PhyRx {
     #[doc(hidden)]
     pub fn set_genie_header(&mut self, h: Option<Genie>) {
         self.genie = h;
+    }
+
+    /// The headers the link expects next (empty outside a link). When a
+    /// header fails its check, the expected header its LLRs favour is
+    /// taken if it stands out (see [`HYP_Z`], [`HYP_MARGIN`]); data
+    /// headers are tried on a data header, header-only ones on the
+    /// header-only retry.
+    pub fn expect(&mut self, hs: &[ExpectedHeader]) {
+        if self.expected == hs {
+            return;
+        }
+        self.expected = hs.to_vec();
+        self.hyps = hs
+            .iter()
+            .map(|e| {
+                let h = if e.data_symbols == 0 {
+                    Header {
+                        constellation: 0,
+                        nsym: 0,
+                        user: e.user,
+                        extra: e.extra,
+                        sparse: false,
+                        mode: DataMode::PLAIN,
+                    }
+                } else {
+                    Header {
+                        constellation: e.constellation.code(),
+                        nsym: e.data_symbols as u16,
+                        user: e.user,
+                        extra: 0,
+                        sparse: e.pilots == Pilots::Sparse,
+                        mode: e.mode,
+                    }
+                };
+                (h, signs(&conv_encode(&header_bits(&h, self.l))))
+            })
+            .collect();
+    }
+
+    /// Test hook: the margin [`Self::expect`]'s test allows (default
+    /// [`HYP_MARGIN`]).
+    #[doc(hidden)]
+    pub fn set_hyp_margin(&mut self, nats: f32) {
+        self.hyp_margin = nats;
     }
 
     #[doc(hidden)]
@@ -557,6 +666,9 @@ impl PhyRx {
                     self.map = Map::new(l, l.pre_syms(), Pilots::Robust);
                     self.drift = Drift::default();
                     self.wshift[0] = 0;
+                    self.rshift[0] = 0;
+                    self.cpm.fill(Complex::ZERO);
+                    self.cpm_n = 0;
                     self.need = self.window_start(0) + l.n as u64;
                 } else {
                     self.fail();
@@ -570,6 +682,11 @@ impl PhyRx {
                 }
                 self.extract(g);
                 self.drift_update(g);
+                // Not B: the samples before its CP are preamble A, which
+                // repeats with a period dividing n.
+                if g > 1 {
+                    self.cp_track(g - 1);
+                }
                 self.g_next += 1;
                 let pre = l.pre_syms();
                 let ho_end = pre + (HO_COPIES - 1) * l.hdr_syms;
@@ -622,7 +739,8 @@ impl PhyRx {
                     self.need = self.written;
                 } else {
                     let gn = self.g_next;
-                    self.wshift[gn] = self.next_shift(gn);
+                    self.rshift[gn] = self.rshift[gn - 1] + self.retime_step();
+                    self.wshift[gn] = self.next_shift(gn) + self.rshift[gn];
                     self.need = self.window_start(gn) + l.n as u64;
                 }
             }
@@ -643,6 +761,20 @@ impl PhyRx {
     #[doc(hidden)]
     pub fn set_drift_tracking(&mut self, on: bool) {
         self.track_drift = on;
+    }
+
+    /// Test hook: turn the in-burst re-timing off (on by default).
+    #[doc(hidden)]
+    pub fn set_retiming(&mut self, on: bool) {
+        self.retiming = on;
+    }
+
+    /// Test hook: the window placement before long echoes were handled
+    /// (energy-window plateau only, no re-timing).
+    #[doc(hidden)]
+    pub fn set_legacy_timing(&mut self, on: bool) {
+        self.legacy_timing = on;
+        self.retiming = !on;
     }
 
     /// Impulse blanker ([`crate::blanker`]) on (the default) or off.
@@ -767,6 +899,42 @@ impl PhyRx {
         let fp = (tm..tm + e_win).find(|&d| self.corr[d] >= 0.3 * cmax).unwrap_or(tm);
         self.first_path = lo + fp as u64;
         self.win0 = tau - l.b_backoff as u64;
+        // Echoes longer than the energy window (MPD: 4 ms on a 4 ms CP)
+        // leave one path outside it, and all of that path turns into ISI.
+        // A path arriving `k` samples before the window or after its CP
+        // leaks about k/n of its energy, so when the window above costs
+        // more than 3 samples of such leakage (power-weighted, over the
+        // lags within 6 dB of the strongest: at 10 dB, noise lags moved the
+        // window on MPP near threshold) beyond the best placement, take
+        // the placement within a sample of the best nearest the original.
+        let cmax = self.corr[..nl].iter().fold(0f32, |m, &v| m.max(v));
+        let paths: Vec<(i64, f32)> = (0..nl)
+            .filter(|&d| self.corr[d] >= 0.25 * cmax)
+            .map(|d| (d as i64, self.corr[d]))
+            .collect();
+        let ptot: f32 = paths.iter().map(|p| p.1).sum();
+        let cp = l.cp as i64;
+        let cost = |s: i64| -> f32 {
+            paths
+                .iter()
+                .map(|&(d, p)| p * ((s - d).max(0) + (d - s - cp).max(0)) as f32)
+                .sum::<f32>()
+                / ptot
+        };
+        let s0 = tm as i64 - l.b_backoff as i64;
+        let (first, last) = (paths[0].0, paths[paths.len() - 1].0);
+        let cands = (last - cp).min(s0)..=first.max(s0);
+        let cmin = cands.clone().map(cost).fold(f32::INFINITY, f32::min);
+        if !self.legacy_timing && cost(s0) > cmin + 3.0 {
+            let s = cands
+                .filter(|&s| cost(s) <= cmin + 1.0)
+                .min_by_key(|&s| (s - s0).abs())
+                .unwrap_or(s0);
+            if s != s0 {
+                self.stats.placed += 1;
+            }
+            self.win0 = (lo as i64 + s) as u64;
+        }
         self.df_res = 0.0;
 
         // Fine frequency from A's clean region (every path inside A):
@@ -995,7 +1163,36 @@ impl PhyRx {
             let s = 1.0 - 2.0 * scramble(SEED_HDR, j) as f32;
             coded[j % HDR_CODED] += s * self.slot_llr[k * hs + (a * i) % hs];
         }
-        parse_header(&viterbi(&coded), l)
+        let bits = viterbi(&coded);
+        parse_header(&bits, l).or_else(|| self.expected_header(&coded, &bits, copies > 1))
+    }
+
+    /// After a failed check: the expected header (of the kind tried)
+    /// whose code sequence the header LLRs `coded` favour, if its
+    /// correlation with them stands [`HYP_Z`] noise deviations clear and
+    /// it scores within [`HYP_MARGIN`] nats of the likeliest sequence
+    /// `ml`. A burst whose header is not among those expected (another
+    /// station's, an unexpected length) is explained far better by its own
+    /// header, at least the code's free distance (64 coded bits) away.
+    fn expected_header(&mut self, coded: &[f32; HDR_CODED], ml: &[u8; HDR_BITS], header_only: bool) -> Option<Header> {
+        let score = |s: &[f32; HDR_CODED]| s.iter().zip(coded).map(|(a, b)| a * b).sum::<f32>();
+        let (h, best) = self
+            .hyps
+            .iter()
+            .filter(|(h, _)| h.header_only() == header_only)
+            .map(|(h, s)| (*h, score(s)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        let norm = coded.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-30);
+        // LLRs are ln P(0)/P(1): a sequence's log-likelihood is half its
+        // correlation, up to a constant.
+        let margin = 0.5 * (score(&signs(&conv_encode(ml))) - best);
+        self.stats.hyp_z = best / norm;
+        self.stats.hyp_margin = margin;
+        if best / norm < HYP_Z || margin > self.hyp_margin {
+            return None;
+        }
+        self.stats.header_expected += 1;
+        Some(h)
     }
 
     /// Stream index of the burst's first audio sample, from the first
@@ -1007,5 +1204,55 @@ impl PhyRx {
         let gd = (self.l.filter_len - 1) as i64 + self.blanker.delay() as i64;
         let start = DEC as i64 * a_start + (DEC as i64 - 1) - gd;
         start.max(0) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ion_dsp::dsp::NoiseGen;
+
+    use super::*;
+
+    /// Expected-header decoding on header LLRs of pure noise, against 500
+    /// expected headers: nothing may pass. And the true header among them
+    /// is found from LLRs too weak for the Viterbi decision.
+    #[test]
+    fn expected_headers_on_noise_and_weak_signal() {
+        let mut rx = PhyRx::new(1500.0);
+        let hs: Vec<ExpectedHeader> = (0..500u16)
+            .map(|k| ExpectedHeader {
+                constellation: Constellation::Qpsk,
+                data_symbols: 20 + (k as usize % 50),
+                user: 0x2A3 ^ (k / 50) << 12,
+                extra: 0,
+                pilots: Pilots::Robust,
+                mode: DataMode::new(true, 2.25),
+            })
+            .collect();
+        rx.expect(&hs);
+        let mut g = NoiseGen::new(5);
+        let (mut passed, mut zmax) = (0, f32::MIN);
+        for _ in 0..1000 {
+            let coded: [f32; HDR_CODED] = std::array::from_fn(|_| 2.0 * g.gaussian());
+            passed += rx.expected_header(&coded, &viterbi(&coded), false).is_some() as usize;
+            zmax = zmax.max(rx.stats.hyp_z);
+        }
+        assert_eq!(passed, 0, "noise passed (largest score {zmax:.1})");
+
+        let truth = rx.hyps[123];
+        let (mut found, mut wrong, mut viterbi_ok) = (0, 0, 0);
+        for _ in 0..200 {
+            // Weak LLRs: mean 0.35, unit variance.
+            let coded: [f32; HDR_CODED] = std::array::from_fn(|j| truth.1[j] * 0.35 + g.gaussian());
+            let ml = viterbi(&coded);
+            viterbi_ok += (parse_header(&ml, rx.l) == Some(truth.0)) as usize;
+            match rx.expected_header(&coded, &ml, false) {
+                Some(h) if h == truth.0 => found += 1,
+                Some(_) => wrong += 1,
+                None => {}
+            }
+        }
+        assert_eq!(wrong, 0);
+        assert!(found > 2 * viterbi_ok + 20, "found {found}, Viterbi alone {viterbi_ok}");
     }
 }

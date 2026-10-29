@@ -74,7 +74,7 @@ impl PhyRx {
     /// Window shift for symbol `g`: follows the drift estimate one sample
     /// at a time, with hysteresis.
     pub(super) fn next_shift(&self, g: usize) -> i32 {
-        let prev = self.wshift[g - 1];
+        let prev = self.wshift[g - 1] - self.rshift[g - 1];
         let d = self.drift_eps() * (g * self.l.sym()) as f64;
         if d > prev as f64 + 0.7 {
             prev + 1

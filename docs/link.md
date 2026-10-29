@@ -313,6 +313,22 @@ the link stalls (16QAM 3/4 pinned at WGN +10 dB delivered nothing in 5
 minutes without it, 13 566 B/min with it). Fresh frames never push the
 stored set past the 64 slots an ACK can name.
 
+**Iterative receiver** (`Config::turbo`, default 2 passes). When an OFDM
+long-frame burst arrives with a codeword that does not decode, the
+station gives the receiver's snapshot of the burst (`Incoming::grid`,
+[phy.md](phy.md#iterative-data-stage)) a prior per bit: the re-encoded
+bits of the codewords that decoded, the decoder's posteriors of the
+others, and decodes the burst again from the store as it was before it
+(`HarqRx::receive_turbo`; behind a cue, with the cue's partial count).
+Passes go on while each one decodes more; the
+store keeps the LLRs of the best. A pass costs about 0.5 ms of CPU per
+data symbol, so a burst gets at most `TURBO_SYMBOLS` (1000) symbol
+passes: two on an 8 s Normal burst (~0.4 s), one on a 16 s one, none on
+the longest, so that the ACK is not held up past the peer's reply slack.
+The posteriors fed back do not make the stored LLRs of codewords that
+still fail any worse (`rx_lab.rs` `turbo_fer`: 0.422 bit of information
+per coded bit either way on MPP, 0.4054 → 0.4058 on MPG).
+
 ## MFSK cue
 
 At low S:N most full-band OFDM data bursts that are lost are never heard:
@@ -360,6 +376,27 @@ today's full-band data header at +1.4…+1.8 dB on WGN, +4…+4.7 on MPG,
 ([experiments/next-link.md](experiments/next-link.md), the cue rule).
 `tests/cue.rs` checks a cue-less peer gets no cue (as caller and as called
 station) and that two stations with cues use them.
+
+## Expected headers
+
+While a link is up the station lists the OFDM bursts its peer may send
+next (`Station::expected`), and the receivers decode a header that fails
+its check against them ([phy.md](phy.md#expected-headers)). Receiving
+side: data bursts at every OFDM level whose effective-SNR threshold is at
+most 5 dB (the sender may jump several levels after a loss; headers fail
+only below about +5 dB, where faster levels lose their data anyway), with
+and without the HARQ increments for the stored codewords (check bits
+`1 + P mod 3`, or 0), every frame count up to `max_burst_s`, the next two
+burst numbers; poll and idle; and the turn (with each 6-bit report or
+none) only while our ACKs ask for it. Sending side: a full ACK frame in
+the waveform of our data and of the last ACK. The goodbyes only while we
+are saying goodbye ourselves: a turn or a goodbye taken from a guess
+would hand the link over or end it, so those are expected only when our
+side has asked for them. Tiny ACKs carry a bitmap and a report, too many
+values to list. Nothing is expected outside a link: a call comes in
+MFSK. A Normal receiver gets about 190 headers (`tests/expect.rs`, which also checks
+that every slow, short data burst and tiny burst of a running link was in
+the set). `Config::expect_headers` (on) turns it off.
 
 ## Slice placement
 
@@ -452,6 +489,8 @@ HF leaves compression off on links; nets compress direct messages
 | `idle_s`, `break_in_s`, `link_timeout_s` | 10 s, 20 s, 120 s | |
 | `loss_hold_s`, `fail_hold_s`, `fail_hold_max_s` | 15 s, 30 s, 480 s | |
 | `harq` | on | |
+| `turbo` | 2 | passes of the iterative receiver (0: off) |
+| `expect_headers` | on | the receivers try the expected headers |
 | `pick_family`, `eff_snr` | on, on | channel report |
 | `burst_adapt`, `burst_overhead`, `burst_steady_db` | on, 12%, 3 dB | |
 | `tiny_ack_all`, `cheap_ack_margin_db` | on, 0 dB | |
@@ -466,8 +505,8 @@ HF leaves compression off on links; nets compress direct messages
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
 `ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_GEAR=ladder`,
-`ION_STRETCH=0`, `ION_MERGE=0`, `ION_CUE=0`, `ION_CUE_DB`, `ION_PARTIAL=0`;
-its header lists the rest).
+`ION_STRETCH=0`, `ION_MERGE=0`, `ION_CUE=0`, `ION_CUE_DB`, `ION_PARTIAL=0`,
+`ION_TURBO=n`, `ION_EXPECT=0`; its header lists the rest).
 
 ## Over the air
 

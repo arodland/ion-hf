@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ion_dsp::dsp::NoiseGen;
 
 use super::harq::{ModelSlot, Soft};
-use super::station::{Air, CONTROL, Incoming, Outgoing, Station, TINY};
+use super::station::{Air, CONTROL, Expected, Incoming, Outgoing, Station, TINY};
 use crate::fec::Rate;
 use crate::level::{FrameSize, Guard, LADDER, Wave};
 use crate::phy_mfsk::MfskMode;
@@ -18,6 +18,10 @@ use crate::phy_mfsk::MfskMode;
 /// the burst was not even detected).
 pub trait Medium {
     fn carry(&mut self, from: usize, burst: &Outgoing, start: f64, end: f64) -> Option<Incoming>;
+
+    /// What station `to` expects to hear next ([`Station::expected`]),
+    /// before each burst it may receive.
+    fn expect(&mut self, _to: usize, _e: &[Expected]) {}
 }
 
 /// Air-time arithmetic from a handful of numbers per waveform, roughly what
@@ -237,6 +241,7 @@ impl Medium for ModelMedium {
                 c
             },
             slot: 0,
+            grid: None,
         })
     }
 }
@@ -483,6 +488,7 @@ impl Sim {
             if let Some(b) = self.stations[s].poll_tx(t) {
                 let end = t + b.duration(&*self.air);
                 self.busy_until[s] = end;
+                self.medium.expect(other, &self.stations[other].expected());
                 let inc = self.medium.carry(s, &b, t, end);
                 self.log.push(AirEvent {
                     from: s,

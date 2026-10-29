@@ -55,6 +55,9 @@ pub struct Estimator {
     /// Error-variance scale from cross-validation (>= 1).
     pub mse_scale: f32,
     pub model: (f64, f64),
+    /// Pilots per estimate ([`Layout::est_k`] unless changed, at most
+    /// [`KMAX`]).
+    pub k: usize,
     pub pilots: Vec<Pilot>,
     start: Vec<usize>,
     cand: Vec<(f32, u32)>,
@@ -74,6 +77,7 @@ impl Estimator {
             lg: 8.0,
             mse_scale: 1.0,
             model: default_model(l),
+            k: l.est_k,
             pilots: Vec::with_capacity(max_g * (l.robust.pilots(l.nc).max(l.sparse.pilots(l.nc)) + 1) + l.nc),
             start: Vec::with_capacity(max_g + 1),
             cand: Vec::with_capacity((2 * l.gw + 1) * (l.nc + 2)),
@@ -114,25 +118,36 @@ impl Estimator {
         sigma2: &[f32],
         value: impl Fn(usize, usize) -> Option<Complex>,
     ) {
+        self.load_with(grid, ng, |c, g| value(c, g).map(|x| (x, sigma2[c])));
+    }
+
+    /// [`Self::load`] with each pilot's own noise variance: `value(c, g)`
+    /// gives the cell's (expected) value and the variance of `y − h·x`.
+    pub fn load_with(&mut self, grid: &[Complex], ng: usize, value: impl Fn(usize, usize) -> Option<(Complex, f32)>) {
         let nc = self.l.nc;
         self.pilots.clear();
         self.start.clear();
         for g in 0..ng {
             self.start.push(self.pilots.len());
             for c in 0..nc {
-                if let Some(x) = value(c, g) {
+                if let Some((x, v)) = value(c, g) {
                     let e = x.norm_sqr();
                     let y = grid[g * nc + c];
                     self.pilots.push(Pilot {
                         c: c as u8,
                         g: g as u16,
                         h: (y * x.conj()).scale(1.0 / e),
-                        var: sigma2[c] / e,
+                        var: v / e,
                     });
                 }
             }
         }
         self.start.push(self.pilots.len());
+    }
+
+    /// Index into `pilots` of the pilot at (`c`, `g`).
+    pub fn pilot_index(&self, c: usize, g: usize) -> Option<usize> {
+        (self.start[g]..self.start[g + 1]).find(|&i| self.pilots[i].c as usize == c)
     }
 
     /// Mean channel power from the pilots, noise removed.
@@ -177,7 +192,14 @@ impl Estimator {
     /// MMSE estimate of the channel at (`c`, `g`) from pilots of symbols
     /// `0..ng`, and its error variance.
     pub fn estimate(&mut self, c: usize, g: usize, ng: usize, p_h: f32) -> (Complex, f32) {
-        let (h, mse) = self.estimate_excl(c, g, ng, p_h, usize::MAX);
+        self.estimate_without(c, g, ng, p_h, usize::MAX)
+    }
+
+    /// [`Self::estimate`] leaving out pilot `exclude` (an index into
+    /// `pilots`): a cell's own observation, when data cells serve as
+    /// pilots.
+    pub fn estimate_without(&mut self, c: usize, g: usize, ng: usize, p_h: f32, exclude: usize) -> (Complex, f32) {
+        let (h, mse) = self.estimate_excl(c, g, ng, p_h, exclude);
         (h, mse * self.mse_scale)
     }
 
@@ -200,7 +222,7 @@ impl Estimator {
                 self.cand.push((d, i as u32));
             }
         }
-        let k = self.cand.len().min(self.l.est_k);
+        let k = self.cand.len().min(self.k);
         if k == 0 {
             return (Complex::ZERO, p_h);
         }

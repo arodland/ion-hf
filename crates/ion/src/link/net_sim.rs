@@ -207,6 +207,7 @@ impl<S: SimStation> NetSim<S> {
                     snr_db,
                     chan: crate::chan::ChannelMeas::of_snr(snr_db),
                     slot: 0,
+                    grid: None,
                 };
                 // Everyone shares the simulator's clock: the burst's place
                 // on it is known exactly.

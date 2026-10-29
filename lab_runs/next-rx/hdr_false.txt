@@ -1,0 +1,10 @@
+
+running 1 test
+L9: margins of the wrong headers taken: []
+L9: 1440 bursts of another link or an unexpected length, 0 taken as ours; 1200 s of noise: 0 syncs, 0 headers failed, 0 taken from the set
+L7: margins of the wrong headers taken: []
+L7: 1440 bursts of another link or an unexpected length, 0 taken as ours; 1200 s of noise: 0 syncs, 0 headers failed, 0 taken from the set
+test hdr_false_long ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 223.96s
+

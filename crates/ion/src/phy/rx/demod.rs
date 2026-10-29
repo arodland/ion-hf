@@ -1,6 +1,8 @@
 //! The data stage of a burst: phase tracking, channel estimation, noise,
 //! LLRs, the SNR report and the channel measurement.
 
+use std::sync::Arc;
+
 use ion_dsp::dsp::Complex;
 
 use crate::chan::{self, ChannelMeas, Eesm};
@@ -9,7 +11,7 @@ use crate::phy::frame::*;
 use crate::phy::tx::tx_distortion_db;
 use crate::phy::{Constellation, DataMode};
 
-use super::{BLANK_ERASE, CellDebug, PhyRx, RxBurst, known};
+use super::{BLANK_ERASE, BurstGrid, CellDebug, PhyRx, RxBurst, known};
 
 /// Data cells in each window of the receiver's local noise estimate.
 const LOCAL_CELLS: usize = 48;
@@ -230,8 +232,10 @@ impl PhyRx {
                 clock_ppm: 0.0,
                 chan: ChannelMeas::of_snr(self.snr_db(1, ng, &sig2[..nc])),
                 mode: DataMode::PLAIN,
+                grid: None,
             };
         }
+        self.rereference();
         let nsym = ng - pre;
         let cons = Constellation::from_code(h.constellation);
         let mode = h.mode;
@@ -399,6 +403,7 @@ impl PhyRx {
             d.clear();
         }
         let mut eesm = Eesm::default();
+        let mut cell_s2 = vec![0f32; nsym * dc];
         for g in pre..ng {
             let row = &dtab[g % per];
             let base = (g - pre) * dc;
@@ -417,6 +422,7 @@ impl PhyRx {
                     let k = 1.0 / (1.0 - bf);
                     s2 = s2.max(k * sig2[c] + bf * k * self.hbuf[cell].norm_sqr() * es);
                 }
+                cell_s2[cell] = s2;
                 eesm.add(self.hbuf[cell].norm_sqr(), s2 + self.mbuf[cell]);
                 if let Some(d) = self.debug.as_mut() {
                     d.push(CellDebug {
@@ -483,6 +489,7 @@ impl PhyRx {
             chan.delay_ms = f32::NAN;
             chan.doppler_hz = f32::NAN;
         }
+        let grid = BurstGrid::new(l, h, map, &self.grid[..ng * nc], self.sigma2, cell_s2, p_h);
         RxBurst {
             constellation: cons,
             user: h.user,
@@ -497,6 +504,7 @@ impl PhyRx {
             clock_ppm: (eps * 1e6) as f32,
             chan,
             mode,
+            grid: Some(Arc::new(grid)),
         }
     }
 }
