@@ -634,7 +634,8 @@ noise over ±4).
    no frequency correction here: one from B and the header pilots is
    noisier at low SNR than the preamble estimate (it cost about 1.5 dB of
    header sensitivity); the Wiener model absorbs the residual and the data
-   stage tracks it over the burst.
+   stage tracks it over the burst. Inside a link, a header that fails is
+   tested against the headers the link expects (see Expected headers).
 5. **Data**, when the last symbol has arrived (`phy/rx/demod.rs`):
    - residual frequency: products of pilot pairs 4 symbols apart, in
      blocks of 8 symbols, unwrapped block to block (pilot pairs alias every
@@ -833,6 +834,54 @@ S:N at 10% / 30% / 50% codeword loss:
 
 MPD at 8 dB: 34% of codewords lost without, 13–14% with. A pass took
 about 180 ms on an 8 s burst (one core of the test machine, six busy).
+
+### Expected headers
+
+Near 0 dB the header, not detection, is what loses a burst: at 0 dB on
+WGN about half of Normal QPSK 1/3 bursts sync and then fail the header
+CRC. Inside a link the receiver knows most of the next header (session,
+the levels the sender uses, the burst number, the HARQ check bits, the
+frame counts it may send). The station lists those headers
+(`Station::expected`, [link.md](link.md#expected-headers)) and each OFDM
+receiver keeps those of its numerology (`PhyRx::expect`, a few hundred at
+most). When a header fails its check, each expected header's code
+sequence `s` (±1 per coded bit) is correlated with the combined header
+LLRs `L`; the best is taken if
+
+- its score `Σ s·L / ‖L‖` is at least 5 (`HYP_Z`): on noise every
+  header's score is a unit Gaussian, so a few hundred headers pass once
+  in about 10⁴ failed headers on noise, and noise rarely syncs at all;
+- it lies within 30 nats (`HYP_MARGIN`) of the likeliest code sequence,
+  the Viterbi decision that failed the check (`½ Σ (s_ml − s)·L`, LLRs
+  being ln P(0)/P(1)). A burst whose header is not expected, another
+  station's or one of ours with other fields, is explained far better by
+  its own header, at least the code's free distance (64 coded bits) away.
+  True headers taken in the measurements below lay at most 24.4 nats
+  below the decision (median 7.5–8).
+
+Data headers are tried on the first header copy, header-only ones on the
+two-copy retry. Outside a link the set is empty and nothing changes.
+`RxStats::header_expected` counts the headers taken.
+
+Measured (`tests/rx_lab.rs`, `hdr_floor`: 8 s bursts, IONOS 2 paths,
+60 per point, the set a station holds for the guard's levels up to
+5 dB with nothing stored: 56 headers for Normal, 26 for Long), S:N where
+10% of bursts are lost before the data:
+
+| | WGN | MPG | MPP |
+|---|---:|---:|---:|
+| Normal QPSK 1/3, plain | 1.4 | 6.0 | 5.5 |
+| Normal QPSK 1/3, expected headers | 0.0 | 3.5 | 3.2 |
+| Long QPSK 1/4, plain | 1.3 | 5.3 | 5.0 |
+| Long QPSK 1/4, expected headers | −0.8 | 2.0 | 3.0 |
+
+No wrong header was taken there, nor (`hdr_false_long`) from 2880 bursts
+per guard of another link (another session) or of our own link with
+unexpected check bits, at −3 to +9 dB on WGN and MPP, even with no
+margin limit at all; 20 minutes of noise per guard never synced.
+`expected_headers_on_noise_and_weak_signal` (unit test) puts 1000 header
+LLR vectors of pure noise against 500 expected headers (none passes) and
+finds the true header from LLRs too weak for the Viterbi decision alone.
 
 ### Long echoes and the channel measurement
 

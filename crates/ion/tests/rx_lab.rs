@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use ion::fec::{self, Rate};
-use ion::level::{LADDER, Wave};
+use ion::level::{EFF_THRESHOLDS_DB, LADDER, Wave};
 use ion::link::audio;
 use ion::link::harq::{HarqRx, Soft};
-use ion::phy::{self, Constellation, Numerology, PhyRx, Pilots, REFINE_K, RxStats};
+use ion::phy::{self, Constellation, DataMode, ExpectedHeader, Numerology, PhyRx, Pilots, REFINE_K, RxStats};
 use ion_dsp::ionos::{Ionos, Mode, Reference, reference_power};
 
 fn env<T: std::str::FromStr>(k: &str) -> Option<T> {
@@ -76,6 +76,8 @@ fn frames_for(num: Numerology, p: Pilots, c: Constellation, r: Rate, secs: f64) 
 /// bits, and the header's `user`.
 struct Burst {
     audio: Vec<f32>,
+    /// Data symbols.
+    nsym: usize,
     infos: Vec<Vec<u8>>,
     user: u16,
     num: Numerology,
@@ -83,6 +85,11 @@ struct Burst {
 }
 
 fn burst(l: usize, mode: Mode, snr: f32, seed: u64, secs: f64) -> Burst {
+    burst_as(l, mode, snr, seed, secs, 0x2000 | (seed % 0x1000) as u16)
+}
+
+/// [`burst`] with the header's `user` given.
+fn burst_as(l: usize, mode: Mode, snr: f32, seed: u64, secs: f64, user: u16) -> Burst {
     let lv = LADDER[l];
     let Wave::Ofdm(g) = lv.wave else {
         panic!("level {l} is not OFDM")
@@ -95,7 +102,6 @@ fn burst(l: usize, mode: Mode, snr: f32, seed: u64, secs: f64) -> Burst {
         .map(|f| random_bits(fec::K, seed * 1000 + f as u64))
         .collect();
     let coded: Vec<u8> = infos.iter().flat_map(|i| fec::encode(r, i)).collect();
-    let user = 0x2000 | (seed % 0x1000) as u16;
     let mut tx = phy::modulate_full(num, c, user, 0, &coded, center, &audio::tx_options(l));
     // As `audio::transmit_with` puts it on the air.
     let gain = (audio::ofdm_gain(audio::OFDM_AIR_GAIN_DB) * 10f32.powf(audio::level_trim_db(l) / 20.0))
@@ -111,6 +117,7 @@ fn burst(l: usize, mode: Mode, snr: f32, seed: u64, secs: f64) -> Burst {
     ch.process(&input, Some((reference_power(&tx, Reference::Peak), snr)), &mut out);
     Burst {
         audio: out,
+        nsym: phy::data_symbols_with(num, pilots, c, coded.len()),
         infos,
         user,
         num,
@@ -393,5 +400,258 @@ fn turbo_fer() {
                 isum / (*n).max(1) as f64
             );
         }
+    }
+}
+
+/// Session byte of the link the expected-header tests receive in.
+const SESSION: u16 = 0x5A;
+
+/// A data header's `user` as the station builds it: the level's air
+/// code (OFDM levels from 2), the session, the burst number.
+fn user_for(l: usize, session: u16, id: u16) -> u16 {
+    let first_ofdm = LADDER.iter().position(|x| matches!(x.wave, Wave::Ofdm(_))).unwrap();
+    (l - first_ofdm + 2) as u16 | session << 4 | id << 12
+}
+
+/// What a receiving station expects of a data burst in level `l`'s
+/// guard (`Station::expected`, data part, nothing stored): every level
+/// of the guard whose threshold is at most 5 dB, every frame count up to
+/// an 8 s burst, the next two burst numbers.
+fn expected_after(l: usize, session: u16) -> Vec<ExpectedHeader> {
+    let Wave::Ofdm(g) = LADDER[l].wave else {
+        panic!("not OFDM")
+    };
+    let num = audio::numerology(g);
+    let mut out = Vec::new();
+    for (lv, &x) in LADDER.iter().enumerate() {
+        if x.wave != LADDER[l].wave || EFF_THRESHOLDS_DB[lv] > 5.0 {
+            continue;
+        }
+        let opt = audio::tx_options(lv);
+        let fmax = frames_for(num, x.pilots, x.constellation, x.rate, 8.0);
+        for f in 1..=fmax {
+            for id in [1, 2] {
+                out.push(ExpectedHeader {
+                    constellation: x.constellation,
+                    data_symbols: phy::data_symbols_with(num, x.pilots, x.constellation, f * x.rate.n()),
+                    user: user_for(lv, session, id),
+                    extra: 0,
+                    pilots: x.pilots,
+                    mode: DataMode::new(opt.spread, opt.data_gain_db),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Header outcome of one burst through one receiver.
+#[derive(Clone, Copy, Default)]
+struct HdrOut {
+    synced: bool,
+    /// Delivered with the true header.
+    right: bool,
+    /// Delivered with a header of our session that is not the true one.
+    wrong: bool,
+    /// Taken from the expected set.
+    expected: bool,
+    margin: f32,
+}
+
+fn receive_hdr(b: &Burst, want: (u16, usize), expect: Option<&[ExpectedHeader]>, margin: f32) -> HdrOut {
+    let mut rx = PhyRx::with_numerology(b.num, b.center);
+    if let Some(e) = expect {
+        rx.expect(e);
+    }
+    rx.set_hyp_margin(margin);
+    let mut got = Vec::new();
+    rx.process(&b.audio, &mut got);
+    let st = rx.stats();
+    let mut o = HdrOut {
+        synced: st.syncs > 0,
+        expected: st.header_expected > 0,
+        margin: st.hyp_margin,
+        ..HdrOut::default()
+    };
+    for x in &got {
+        let nsym = phy::data_symbols_with(b.num, x.pilots, x.constellation, x.llrs.len().max(1));
+        if (x.user, nsym) == want && !x.header_only {
+            o.right = true;
+        } else if x.user >> 4 & 0xFF == SESSION {
+            o.wrong = true;
+        }
+    }
+    o
+}
+
+/// Expected-header decoding: per guard (`RX_HDR_LEVELS`, default `9,7`:
+/// Normal and Long QPSK) and channel, the share of bursts lost before
+/// the data with and without the expected set of a station that heard
+/// the level last (a few hundred headers), and wrong headers taken.
+/// `RX_HYP_MARGIN` sets the margin (default `HYP_MARGIN`; a large value
+/// prints the margin's spread for calibration).
+#[test]
+#[ignore]
+fn hdr_floor() {
+    let levels: Vec<usize> = list("RX_HDR_LEVELS", "9,7");
+    let snrs: Vec<f32> = list("RX_SNRS", "-4,-3,-2,-1,0,1,2,3,4,5,6");
+    let bursts: u64 = env("RX_BURSTS").unwrap_or(60);
+    let margin: f32 = env("RX_HYP_MARGIN").unwrap_or(ion::phy::HYP_MARGIN);
+    for &l in &levels {
+        let exp = expected_after(l, SESSION);
+        for m in modes() {
+            let jobs: Vec<(usize, f32, u64)> = snrs
+                .iter()
+                .enumerate()
+                .flat_map(|(si, &s)| (0..bursts).map(move |b| (si, s, b)))
+                .collect();
+            let res = parallel(&jobs, [HdrOut::default(); 2], |&(_, s, b)| {
+                let seed = 7 + b + 1000 * l as u64 + 100_000 * m as u64;
+                let user = user_for(l, SESSION, 1);
+                let bu = burst_as(l, m, s, seed, 8.0, user);
+                let want = (user, bu.nsym);
+                [
+                    receive_hdr(&bu, want, None, margin),
+                    receive_hdr(&bu, want, Some(&exp), margin),
+                ]
+            });
+            println!(
+                "\n### L{l} {}, {} expected headers, {bursts} bursts per point",
+                m.name(),
+                exp.len()
+            );
+            println!("| S:N | no sync | plain: header lost | expected: header lost | taken from the set | wrong |");
+            println!("|---:|---:|---:|---:|---:|---:|");
+            let mut curves = [Vec::new(), Vec::new()];
+            let (mut ok_m, mut bad_m) = (Vec::new(), Vec::new());
+            for (si, &s) in snrs.iter().enumerate() {
+                let v: Vec<&[HdrOut; 2]> = jobs
+                    .iter()
+                    .zip(&res)
+                    .filter(|(j, _)| j.0 == si)
+                    .map(|(_, r)| r)
+                    .collect();
+                let n = v.len() as f32;
+                let nosync = v.iter().filter(|r| !r[0].synced).count() as f32 / n;
+                let lost0 = v.iter().filter(|r| !r[0].right).count() as f32 / n;
+                let lost1 = v.iter().filter(|r| !r[1].right).count() as f32 / n;
+                let taken = v.iter().filter(|r| r[1].expected).count();
+                let wrong = v.iter().filter(|r| r[1].wrong).count();
+                for r in &v {
+                    if r[1].expected && r[1].right {
+                        ok_m.push(r[1].margin);
+                    } else if r[1].expected {
+                        bad_m.push(r[1].margin);
+                    }
+                }
+                curves[0].push((s, lost0));
+                curves[1].push((s, lost1));
+                println!("| {s} | {nosync:.2} | {lost0:.2} | {lost1:.2} | {taken} | {wrong} |");
+            }
+            println!(
+                "{} L{l} 10% of bursts lost before the data: plain {}, expected {}",
+                m.name(),
+                crossing(&curves[0], 0.1),
+                crossing(&curves[1], 0.1)
+            );
+            let q = |v: &mut Vec<f32>| {
+                v.sort_by(f32::total_cmp);
+                let at = |p: f32| {
+                    v.get(((v.len() as f32 - 1.0) * p) as usize)
+                        .copied()
+                        .unwrap_or(f32::NAN)
+                };
+                format!(
+                    "n {} median {:.1} 90% {:.1} 99% {:.1} max {:.1}",
+                    v.len(),
+                    at(0.5),
+                    at(0.9),
+                    at(0.99),
+                    at(1.0)
+                )
+            };
+            println!("margin, right header taken: {}", q(&mut ok_m));
+            println!("margin, wrong header taken: {}", q(&mut bad_m));
+        }
+    }
+}
+
+/// False headers from expected-header decoding: bursts of another link
+/// (another session) at every S:N, bursts of our own link whose header
+/// is not among those expected (HARQ check bits), and noise alone, all through receivers
+/// expecting our link's next burst. `RX_BURSTS` per S:N (default 40),
+/// `RX_NOISE_S` seconds of noise per guard (default 1200).
+#[test]
+#[ignore]
+fn hdr_false_long() {
+    false_accepts(
+        env("RX_BURSTS").unwrap_or(40),
+        env("RX_NOISE_S").unwrap_or(1200.0),
+        &list("RX_SNRS", "-3,-1,0,1,2,3,4,6,9"),
+    );
+}
+
+/// [`hdr_false_long`] in brief, for the regular test run.
+#[test]
+fn expected_headers_take_no_false_ones() {
+    false_accepts(4, 60.0, &[-1.0, 1.0, 3.0]);
+}
+
+fn false_accepts(bursts: u64, noise_s: f32, snrs: &[f32]) {
+    for l in [9usize, 7] {
+        let exp = expected_after(l, SESSION);
+        let Wave::Ofdm(g) = LADDER[l].wave else { unreachable!() };
+        let num = audio::numerology(g);
+        let jobs: Vec<(Mode, f32, u64, bool)> = [Mode::Wgn, Mode::Mpp]
+            .into_iter()
+            .flat_map(|m| {
+                snrs.iter()
+                    .flat_map(move |&s| (0..bursts).flat_map(move |b| [(m, s, b, false), (m, s, b, true)]))
+            })
+            .collect();
+        let margin: f32 = env("RX_HYP_MARGIN").unwrap_or(ion::phy::HYP_MARGIN);
+        let res = parallel(&jobs, (0usize, 0usize, f32::NAN), |&(m, s, b, own)| {
+            let seed = 900 + b + 1000 * l as u64 + 100_000 * m as u64;
+            // Our link's burst with HARQ check bits nobody expects, or
+            // another link's.
+            let user = if own {
+                user_for(l, SESSION, 1 | 1 << 2)
+            } else {
+                user_for(l, 0x33, 1)
+            };
+            let bu = burst_as(l, m, s, seed, 8.0, user);
+            let o = receive_hdr(&bu, (user, bu.nsym), Some(&exp), margin);
+            (
+                o.wrong as usize,
+                o.expected as usize,
+                if o.wrong { o.margin } else { f32::NAN },
+            )
+        });
+        let wrong: usize = res.iter().map(|r| r.0).sum();
+        let mut wm: Vec<f32> = res.iter().map(|r| r.2).filter(|m| m.is_finite()).collect();
+        wm.sort_by(f32::total_cmp);
+        println!("L{l}: margins of the wrong headers taken: {wm:.1?}");
+        let tested = jobs.len();
+        // Noise alone.
+        let mut rx = PhyRx::with_numerology(num, num.center_hz());
+        rx.expect(&exp);
+        let mut noise = ion_dsp::dsp::NoiseGen::new(99 + l as u64);
+        let mut got = Vec::new();
+        let n = (noise_s * 48_000.0) as usize;
+        let mut done = 0;
+        while done < n {
+            let mut a = vec![0f32; 48_000];
+            ion_dsp::channel::add_awgn(&mut a, 0.1, &mut noise);
+            rx.process(&a, &mut got);
+            done += a.len();
+        }
+        let st = rx.stats();
+        println!(
+            "L{l}: {tested} bursts of another link or an unexpected length, {wrong} taken as ours; \
+             {noise_s} s of noise: {} syncs, {} headers failed, {} taken from the set",
+            st.syncs, st.header_fail, st.header_expected
+        );
+        assert_eq!(wrong, 0, "L{l}: a burst that is not the expected one was taken for it");
+        assert_eq!(st.header_expected, 0, "L{l}: noise taken for an expected header");
     }
 }

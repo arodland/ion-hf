@@ -75,7 +75,35 @@ pub struct RxStats {
     pub bursts: u64,
     pub placed: u64,
     pub retime_steps: u64,
+    /// Headers taken from the expected set after a failed check, and the
+    /// last test's score (noise deviations) and distance from the
+    /// likeliest code sequence (nats).
+    pub header_expected: u64,
+    pub hyp_z: f32,
+    pub hyp_margin: f32,
 }
+
+/// A header the receiver expects ([`PhyRx::expect`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpectedHeader {
+    pub constellation: Constellation,
+    /// Data symbols; 0 for a header-only burst.
+    pub data_symbols: usize,
+    pub user: u16,
+    /// A header-only burst's 16 extra bits (0 for a data burst).
+    pub extra: u16,
+    pub pilots: Pilots,
+    pub mode: DataMode,
+}
+
+/// Score an expected header needs, noise standard deviations: on noise
+/// each header's score is a unit Gaussian, so a few hundred headers pass
+/// it about once in 10^4 failed headers, and noise rarely gets as far as
+/// a header at all.
+pub const HYP_Z: f32 = 5.0;
+/// How far below the likeliest code sequence (the Viterbi decision, which
+/// failed the check) an expected header may score, nats.
+pub const HYP_MARGIN: f32 = 30.0;
 
 /// Ring buffer of baseband samples (2.05 s).
 const RING: usize = 1 << 14;
@@ -175,6 +203,11 @@ pub struct PhyRx {
     mbuf: Vec<f32>,
     slot_llr: Vec<f32>,
     genie: Option<Genie>,
+    /// Headers the link expects, and each one's header and code sequence
+    /// (±1 per coded bit).
+    expected: Vec<ExpectedHeader>,
+    hyps: Vec<(Header, [f32; HDR_CODED])>,
+    hyp_margin: f32,
     stats: RxStats,
     debug: Option<Vec<CellDebug>>,
     rho_log: Option<Vec<f32>>,
@@ -206,6 +239,11 @@ pub struct CellDebug {
     pub h: Complex,
     pub mse: f32,
     pub sigma2: f32,
+}
+
+/// A code sequence as ±1 (bit 0 → +1, as LLRs ln P(0)/P(1) lean).
+fn signs(c: &[u8; HDR_CODED]) -> [f32; HDR_CODED] {
+    std::array::from_fn(|j| 1.0 - 2.0 * c[j] as f32)
 }
 
 /// Known value of cell (`c`, `g`) under `map`, or `None` for a data cell.
@@ -302,6 +340,9 @@ impl PhyRx {
             mbuf: vec![0.0; cells],
             slot_llr: vec![0.0; cells * BPS_MAX],
             genie: None,
+            expected: Vec::new(),
+            hyps: Vec::new(),
+            hyp_margin: HYP_MARGIN,
             stats: RxStats::default(),
             debug: None,
             rho_log: None,
@@ -350,6 +391,50 @@ impl PhyRx {
     #[doc(hidden)]
     pub fn set_genie_header(&mut self, h: Option<Genie>) {
         self.genie = h;
+    }
+
+    /// The headers the link expects next (empty outside a link). When a
+    /// header fails its check, the expected header its LLRs favour is
+    /// taken if it stands out (see [`HYP_Z`], [`HYP_MARGIN`]); data
+    /// headers are tried on a data header, header-only ones on the
+    /// header-only retry.
+    pub fn expect(&mut self, hs: &[ExpectedHeader]) {
+        if self.expected == hs {
+            return;
+        }
+        self.expected = hs.to_vec();
+        self.hyps = hs
+            .iter()
+            .map(|e| {
+                let h = if e.data_symbols == 0 {
+                    Header {
+                        constellation: 0,
+                        nsym: 0,
+                        user: e.user,
+                        extra: e.extra,
+                        sparse: false,
+                        mode: DataMode::PLAIN,
+                    }
+                } else {
+                    Header {
+                        constellation: e.constellation.code(),
+                        nsym: e.data_symbols as u16,
+                        user: e.user,
+                        extra: 0,
+                        sparse: e.pilots == Pilots::Sparse,
+                        mode: e.mode,
+                    }
+                };
+                (h, signs(&conv_encode(&header_bits(&h, self.l))))
+            })
+            .collect();
+    }
+
+    /// Test hook: the margin [`Self::expect`]'s test allows (default
+    /// [`HYP_MARGIN`]).
+    #[doc(hidden)]
+    pub fn set_hyp_margin(&mut self, nats: f32) {
+        self.hyp_margin = nats;
     }
 
     #[doc(hidden)]
@@ -984,7 +1069,36 @@ impl PhyRx {
             let s = 1.0 - 2.0 * scramble(SEED_HDR, j) as f32;
             coded[j % HDR_CODED] += s * self.slot_llr[k * hs + (a * i) % hs];
         }
-        parse_header(&viterbi(&coded), l)
+        let bits = viterbi(&coded);
+        parse_header(&bits, l).or_else(|| self.expected_header(&coded, &bits, copies > 1))
+    }
+
+    /// After a failed check: the expected header (of the kind tried)
+    /// whose code sequence the header LLRs `coded` favour, if its
+    /// correlation with them stands [`HYP_Z`] noise deviations clear and
+    /// it scores within [`HYP_MARGIN`] nats of the likeliest sequence
+    /// `ml`. A burst whose header is not among those expected (another
+    /// station's, an unexpected length) is explained far better by its own
+    /// header, at least the code's free distance (64 coded bits) away.
+    fn expected_header(&mut self, coded: &[f32; HDR_CODED], ml: &[u8; HDR_BITS], header_only: bool) -> Option<Header> {
+        let score = |s: &[f32; HDR_CODED]| s.iter().zip(coded).map(|(a, b)| a * b).sum::<f32>();
+        let (h, best) = self
+            .hyps
+            .iter()
+            .filter(|(h, _)| h.header_only() == header_only)
+            .map(|(h, s)| (*h, score(s)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        let norm = coded.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-30);
+        // LLRs are ln P(0)/P(1): a sequence's log-likelihood is half its
+        // correlation, up to a constant.
+        let margin = 0.5 * (score(&signs(&conv_encode(ml))) - best);
+        self.stats.hyp_z = best / norm;
+        self.stats.hyp_margin = margin;
+        if best / norm < HYP_Z || margin > self.hyp_margin {
+            return None;
+        }
+        self.stats.header_expected += 1;
+        Some(h)
     }
 
     /// Stream index of the burst's first audio sample, from the first
@@ -996,5 +1110,55 @@ impl PhyRx {
         let gd = (self.l.filter_len - 1) as i64 + self.blanker.delay() as i64;
         let start = DEC as i64 * a_start + (DEC as i64 - 1) - gd;
         start.max(0) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ion_dsp::dsp::NoiseGen;
+
+    use super::*;
+
+    /// Expected-header decoding on header LLRs of pure noise, against 500
+    /// expected headers: nothing may pass. And the true header among them
+    /// is found from LLRs too weak for the Viterbi decision.
+    #[test]
+    fn expected_headers_on_noise_and_weak_signal() {
+        let mut rx = PhyRx::new(1500.0);
+        let hs: Vec<ExpectedHeader> = (0..500u16)
+            .map(|k| ExpectedHeader {
+                constellation: Constellation::Qpsk,
+                data_symbols: 20 + (k as usize % 50),
+                user: 0x2A3 ^ (k / 50) << 12,
+                extra: 0,
+                pilots: Pilots::Robust,
+                mode: DataMode::new(true, 2.25),
+            })
+            .collect();
+        rx.expect(&hs);
+        let mut g = NoiseGen::new(5);
+        let (mut passed, mut zmax) = (0, f32::MIN);
+        for _ in 0..1000 {
+            let coded: [f32; HDR_CODED] = std::array::from_fn(|_| 2.0 * g.gaussian());
+            passed += rx.expected_header(&coded, &viterbi(&coded), false).is_some() as usize;
+            zmax = zmax.max(rx.stats.hyp_z);
+        }
+        assert_eq!(passed, 0, "noise passed (largest score {zmax:.1})");
+
+        let truth = rx.hyps[123];
+        let (mut found, mut wrong, mut viterbi_ok) = (0, 0, 0);
+        for _ in 0..200 {
+            // Weak LLRs: mean 0.35, unit variance.
+            let coded: [f32; HDR_CODED] = std::array::from_fn(|j| truth.1[j] * 0.35 + g.gaussian());
+            let ml = viterbi(&coded);
+            viterbi_ok += (parse_header(&ml, rx.l) == Some(truth.0)) as usize;
+            match rx.expected_header(&coded, &ml, false) {
+                Some(h) if h == truth.0 => found += 1,
+                Some(_) => wrong += 1,
+                None => {}
+            }
+        }
+        assert_eq!(wrong, 0);
+        assert!(found > 2 * viterbi_ok + 20, "found {found}, Viterbi alone {viterbi_ok}");
     }
 }

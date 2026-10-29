@@ -276,6 +276,25 @@ The posteriors fed back do not make the stored LLRs of codewords that
 still fail any worse (`rx_lab.rs` `turbo_fer`: 0.422 bit of information
 per coded bit either way on MPP, 0.4054 → 0.4058 on MPG).
 
+## Expected headers
+
+While a link is up the station lists the OFDM bursts its peer may send
+next (`Station::expected`), and the receivers decode a header that fails
+its check against them ([phy.md](phy.md#expected-headers)). Receiving
+side: data bursts at every OFDM level whose effective-SNR threshold is at
+most 5 dB (the sender may jump several levels after a loss; headers fail
+only below about +5 dB, where faster levels lose their data anyway), with
+and without the HARQ increments for the stored codewords (check bits
+`1 + P mod 3`, or 0), every frame count up to `max_burst_s`, the next two
+burst numbers; and the tiny bursts that carry nothing unknown: poll,
+idle, turn (with each 6-bit report or none), goodbye. Sending side: a
+full ACK frame in the waveform of our data and of the last ACK, and the
+goodbyes. Tiny ACKs carry a bitmap and a report, too many values to list.
+Nothing is expected outside a link: a call comes in MFSK. A Normal
+receiver gets about 190 headers (`tests/expect.rs`, which also checks
+that every slow, short data burst and tiny burst of a running link was in
+the set). `Config::expect_headers` (on) turns it off.
+
 ## Slice placement
 
 The receiving side watches the three thirds of the passband a slice burst
@@ -368,6 +387,7 @@ HF leaves compression off on links; nets compress direct messages
 | `loss_hold_s`, `fail_hold_s`, `fail_hold_max_s` | 15 s, 30 s, 480 s | |
 | `harq` | on | |
 | `turbo` | 2 | passes of the iterative receiver (0: off) |
+| `expect_headers` | on | the receivers try the expected headers |
 | `pick_family`, `eff_snr` | on, on | channel report |
 | `burst_adapt`, `burst_overhead`, `burst_steady_db` | on, 12%, 3 dB | |
 | `tiny_ack_all`, `cheap_ack_margin_db` | on, 0 dB | |
@@ -378,7 +398,8 @@ HF leaves compression off on links; nets compress direct messages
 | `compress` | off | |
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
-`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_TURBO=n`).
+`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_TURBO=n`,
+`ION_EXPECT=0`).
 
 ## Over the air
 

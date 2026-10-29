@@ -51,6 +51,10 @@ pub struct Config {
     /// interference cancellation fed by the decoder (0: off), fewer on
     /// long bursts ([`super::TURBO_SYMBOLS`]).
     pub turbo: usize,
+    /// Tell the receivers which headers the peer may send next
+    /// ([`super::Station::expected`]), so that a weak header that fails
+    /// its check can still be recognised.
+    pub expect_headers: bool,
     /// Offer (calling) or accept (called) compression of the stream
     /// ([`crate::link::compress`]): used only when both ends have it on, agreed
     /// in the ConnReq and ConnAck. Each [`super::Station::send`] then goes out as
@@ -164,6 +168,7 @@ impl Config {
             skip_slices_from: SKIP_SLICES_FROM,
             harq: true,
             turbo: super::TURBO_PASSES,
+            expect_headers: true,
             compress: false,
             pick_family: true,
             eff_snr: true,

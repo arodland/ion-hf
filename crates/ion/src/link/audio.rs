@@ -8,7 +8,7 @@ use ion_dsp::ionos::{self, Ionos};
 
 use super::harq::Soft;
 use super::sim::{Medium, ModelAir};
-use super::station::{Air, CONTROL, Config, Incoming, Outgoing, TINY, frame_bits, user_code};
+use super::station::{Air, CONTROL, Config, Expected, Incoming, Outgoing, TINY, frame_bits, user_code};
 use crate::fec;
 use crate::level::{FrameSize, Guard, LADDER, Wave};
 use crate::phy::{self, Constellation, Numerology, PhyRx, Pilots, TxOptions};
@@ -366,6 +366,26 @@ fn ofdm_len(b: &phy::RxBurst) -> u64 {
     phy::burst_samples_with(b.numerology, pilots, b.constellation, b.llrs.len()) as u64
 }
 
+/// The PHY header of an expected OFDM burst in guard `g`, as
+/// [`transmit`] would send it.
+fn expected_header(g: Guard, x: &Expected) -> phy::ExpectedHeader {
+    let (c, p) = shape(x.code);
+    let opt = tx_options(x.code);
+    let data = x.bits > 0;
+    phy::ExpectedHeader {
+        constellation: c,
+        data_symbols: if data {
+            phy::data_symbols_with(numerology(g), p, c, x.bits)
+        } else {
+            0
+        },
+        user: x.user,
+        extra: if data { 0 } else { x.extra },
+        pilots: p,
+        mode: phy::DataMode::new(opt.spread, opt.data_gain_db),
+    }
+}
+
 /// Every receiver at once, on the same audio: the full-band OFDM guards,
 /// the slice in each of the three thirds of the passband
 /// ([`crate::slots`]), MFSK, and the slot meter.
@@ -382,6 +402,8 @@ pub struct Receivers {
     meter: SlotMeter,
     /// The meter's pick, stamped on every burst heard.
     slot: u8,
+    /// What the OFDM receivers were last told to expect.
+    expected: Vec<Expected>,
 }
 
 /// How old the meter's frames are before they count: a burst decoded at
@@ -403,6 +425,7 @@ impl Receivers {
             mfsk_out: Vec::new(),
             meter: SlotMeter::new(CENTER_HZ, AUDIO_RATE, METER_LAG_S),
             slot: 0,
+            expected: Vec::new(),
         }
     }
 
@@ -476,6 +499,28 @@ impl Receivers {
     /// The slot meter's pick (0 the centre) and each third's score.
     pub fn slot(&self) -> (u8, [f32; SLOTS]) {
         (self.slot, self.meter.scores())
+    }
+
+    /// The OFDM bursts the station expects next ([`super::Station::expected`]):
+    /// each OFDM receiver tests a header that fails its check against
+    /// those of its own numerology ([`PhyRx::expect`]).
+    pub fn expect(&mut self, e: &[Expected]) {
+        if self.expected == e {
+            return;
+        }
+        self.expected = e.to_vec();
+        let of = |g: Guard| -> Vec<phy::ExpectedHeader> {
+            e.iter()
+                .filter(|x| x.wave == Wave::Ofdm(g))
+                .map(|x| expected_header(g, x))
+                .collect()
+        };
+        self.ofdm.expect(&of(Guard::Normal));
+        self.ofdm_long.expect(&of(Guard::Long));
+        let slice = of(Guard::Slice);
+        for rx in &mut self.ofdm_slice {
+            rx.expect(&slice);
+        }
     }
 
     /// See [`MfskRx::expect`]: a burst the MFSK receiver should look for.
@@ -574,6 +619,10 @@ impl AudioMedium {
 }
 
 impl Medium for AudioMedium {
+    fn expect(&mut self, to: usize, e: &[Expected]) {
+        self.receivers[to].expect(e);
+    }
+
     fn carry(&mut self, from: usize, burst: &Outgoing, _start: f64, _end: f64) -> Option<Incoming> {
         let on_air = matches!(self.paths, Paths::Ionos(_, ionos::Reference::Peak));
         let tx = if on_air {

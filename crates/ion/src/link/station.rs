@@ -16,11 +16,13 @@ use crate::level::{FLOOR, FLOOR_WAVE, Guard, LADDER, Wave};
 use crate::phy_mfsk::MfskMode;
 
 mod config;
+mod expect;
 mod gear;
 mod receiver;
 mod sender;
 
 pub use config::Config;
+pub use expect::Expected;
 pub use receiver::cheap_ack_waves;
 
 /// Burst code of a header-only burst (on the air: 14, [`air_code`]).

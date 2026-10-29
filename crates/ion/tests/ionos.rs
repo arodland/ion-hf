@@ -16,7 +16,8 @@
 //! mean power instead), `ION_SEEDS` (runs averaged per cell, default
 //! 1), `ION_THREADS` (default 2), `ION_SMOOTH=0` / `ION_HOLD=0`
 //! (without `Config::smooth_target` / `hold_by_goodput`), `ION_TURBO`
-//! (`Config::turbo` passes),
+//! (`Config::turbo` passes), `ION_EXPECT=0` (without
+//! `Config::expect_headers`),
 //! `ION_POWER=1` (with `Config::power_aware`), `ION_START=floor`
 //! (the first data burst at the floor, `Config::start_margin_db`),
 //! `ION_TRACE=1` (every data burst's level).
@@ -65,6 +66,9 @@ fn session(mode: Mode, paths: usize, reference: Reference, snr_db: f32, secs: f6
         }
         if let Some(t) = env("ION_TURBO") {
             c.turbo = t;
+        }
+        if std::env::var("ION_EXPECT").is_ok_and(|v| v == "0") {
+            c.expect_headers = false;
         }
         c
     };
