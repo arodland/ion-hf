@@ -202,10 +202,10 @@ bursts rejoin contiguous pieces in flight that a visit to the MFSK floor
 cut into 22-byte pieces back up to the long frame (`merge_pieces`); pieces
 the peer holds HARQ bits of stay as they are.
 
-On IONOS SIM (5 minutes, 2–4 seeds, with `harq_stretch`), against the
-ladder: WGN +3 dB 3638 → 7140 B/min, MPG +3 528 → 1416, MPG +6 5116 →
-7004, MPP +3 1904 → 2499, MPG 0 535 → 787; the low end and +10 dB and up
-unchanged within seed noise ([experiments/next-link.md](experiments/next-link.md)).
+On IONOS SIM (5 minutes, 2 seeds, no cue), against alpha.4's ladder:
+WGN +3 dB 3638 → 7140 B/min, MPG +3 528 → 1348, MPG +6 5115 → 7004, MPP +3
+1904 → 2499, MPG 0 499 → 733; +10 dB unchanged within seed noise
+([experiments/next-link.md](experiments/next-link.md)).
 
 **Ladder** (`Gear::Ladder`):
 - **Climb**: as clean ACKs come back, capped by the target, quickly while
@@ -355,7 +355,9 @@ header is heard anyway and the cue only costs air time):
 Heard 90% of the time (IONOS SIM, S:N against the burst's peak in 3 kHz):
 today's full-band data header at +1.4…+1.8 dB on WGN, +4…+4.7 on MPG,
 +3.4…+6 on MPP and not by +6 dB on MPD; with the R1 cue at −11.0, −7.2,
-−8.0 and −8.4 dB ([experiments/next-link.md](experiments/next-link.md)).
+−8.0 and −8.4 dB (the `exp-mfskhdr` lab). With the goodput shift, MPG
++3 dB 1348 → 2933 B/min and MPP +3 dB 2499 → 3910
+([experiments/next-link.md](experiments/next-link.md), the cue rule).
 `tests/cue.rs` checks a cue-less peer gets no cue (as caller and as called
 station) and that two stations with cues use them.
 
