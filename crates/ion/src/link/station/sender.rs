@@ -181,6 +181,31 @@ impl Station {
         ok
     }
 
+    /// Joins contiguous pieces in flight, up to `max` bytes, leaving those
+    /// the peer holds HARQ bits of (`held`) as they are. The receiver
+    /// places pieces by offset, so a join of pieces it already has part of
+    /// only overlaps.
+    fn merge_inflight(&mut self, held: &[u32], max: usize) {
+        let keys: Vec<u32> = self.inflight.keys().copied().collect();
+        let mut i = 0;
+        while i < keys.len() {
+            let k = keys[i];
+            let mut j = i + 1;
+            if !held.contains(&k) {
+                while let Some(&n) = keys.get(j) {
+                    let len = self.inflight[&k].len();
+                    if held.contains(&n) || k.wrapping_add(len as u32) != n || len + self.inflight[&n].len() > max {
+                        break;
+                    }
+                    let tail = self.inflight.remove(&n).unwrap();
+                    self.inflight.get_mut(&k).unwrap().extend(tail);
+                    j += 1;
+                }
+            }
+            i = j;
+        }
+    }
+
     pub(super) fn data_burst(&mut self) -> Outgoing {
         let level = self.level;
         let lv = LADDER[level];
@@ -205,7 +230,12 @@ impl Station {
             );
         }
         let mut parity_bits: usize = parity.iter().map(|p| p.3).sum();
-        if parity.len() > cap || (!parity.is_empty() && self.air.duration(lv.wave, level, parity_bits) > max_s) {
+        let parity_s = if self.cfg.harq_stretch {
+            max_s.max(self.cfg.max_burst_long_s)
+        } else {
+            max_s
+        };
+        if parity.len() > cap || (!parity.is_empty() && self.air.duration(lv.wave, level, parity_bits) > parity_s) {
             parity.clear();
             parity_bits = 0;
         }
@@ -235,6 +265,9 @@ impl Station {
             for (i, chunk) in data.chunks(max_payload).enumerate() {
                 self.inflight.insert(k + (i * max_payload) as u32, chunk.to_vec());
             }
+        }
+        if self.cfg.merge_pieces && lv.frame == FrameSize::Long {
+            self.merge_inflight(&parity.iter().map(|p| p.0).collect::<Vec<_>>(), max_payload);
         }
         let mut pieces: Vec<u32> = self
             .inflight

@@ -20,7 +20,7 @@ mod gear;
 mod receiver;
 mod sender;
 
-pub use config::Config;
+pub use config::{Config, Gear};
 pub use receiver::cheap_ack_waves;
 
 /// Burst code of a header-only burst (on the air: 14, [`air_code`]).
@@ -339,6 +339,8 @@ pub struct Station {
     /// Each level's recent share of fresh frames delivered (EWMA, newest
     /// weighted [`SUCCESS_WEIGHT`]); `None` until it has been tried.
     success: [Option<f32>; LADDER.len()],
+    /// When each level's `success` last changed.
+    success_at: [f64; LADDER.len()],
     /// The last ACKs' SNR reports, newest last (for `smooth_target`).
     snr_reports: VecDeque<f32>,
     /// Each level is not used before this time, nor are faster ones: all
@@ -455,6 +457,7 @@ impl Station {
             target: FLOOR,
             fails: [0; LADDER.len()],
             success: [None; LADDER.len()],
+            success_at: [f64::NEG_INFINITY; LADDER.len()],
             snr_reports: VecDeque::new(),
             blocked_until: [f64::NEG_INFINITY; LADDER.len()],
             hold_all: [true; LADDER.len()],
@@ -1063,6 +1066,8 @@ impl Station {
         self.level = FLOOR;
         self.target = FLOOR;
         self.fails = [0; LADDER.len()];
+        self.success = [None; LADDER.len()];
+        self.success_at = [f64::NEG_INFINITY; LADDER.len()];
         self.blocked_until = [f64::NEG_INFINITY; LADDER.len()];
         self.hold_all = [true; LADDER.len()];
         self.rx_level = FLOOR;

@@ -149,13 +149,19 @@ cycle, and at most `max_burst_long_s` (32 s). That is long for the slow
 levels (MFSK R0 has 2.3 s of preamble and header and a 1.8 s ACK for 5.7 s
 of data in an 8 s burst) and about `max_burst_s` from the long-guard levels
 up. Any loss, level change or jump in the SNR goes back to `max_burst_s`.
+HARQ increments may stretch a burst up to `max_burst_long_s`
+(`harq_stretch`) rather than be dropped when a loss has shrunk the burst
+below what they need (HARQ, below).
 `burst_climb_db` (off) would hold bursts short while the SNR is close to a
 faster level's entry; it measured even over short transfers and worse over
 20 kB.
 
 ## Gear shifting
 
-The sending side picks each burst's level from the peer's ACKs:
+The sending side picks each burst's level from the peer's ACKs, by
+expected throughput (`gear`, `Gear::Goodput`) or, selectable for an A/B
+on the air, up and down the ladder as before (`Gear::Ladder`, the rule of
+Ion HF 0.1.0-alpha.4).
 
 - **Aim** (`smooth_target`): from a cautious recent SNR, the lower of the
   last report and the median of the last three. On a slow-fading channel
@@ -165,6 +171,34 @@ The sending side picks each burst's level from the peer's ACKs:
   past its threshold loses a few frames, and with HARQ each costs a
   fraction of a frame (−1 dB beat the +1 dB used without HARQ by 6.6% over
   the audio link).
+
+**Goodput** (the default). After each ACK the next level is the one
+expected to move the most: its chance of getting a frame through times its
+speed (payload bits per second of air in a `max_burst_s` burst, preamble
+and header included). The chance is a level's observed success (the share
+of fresh frames delivered, newest burst weighted 0.3), fading back with a
+180 s time constant to what the SNR report predicts: a logistic in the
+report's distance from the level's threshold plus margin, 0.88 at the
+threshold and 0.12 a dB below (the codes' waterfall is that steep). Each
+further whole-burst loss at a level doubles how long its record is
+remembered (at most 16×). Levels more than 2 dB above the report are not
+tried, nor waveforms the channel class rules out; a change of level must
+promise 15% more, 32% across frame sizes (which re-cut what is in flight).
+There are no holds: a level that keeps losing scores itself out. A whole
+OFDM burst lost with 4 dB to spare is the channel's doing (fast fading, an
+echo past the guard), and counts as a loss at the other levels of its
+waveform and the faster ones whose guard is no longer, so a dead waveform
+is not found out level by level (`a_dead_waveform_is_not_retried_over_and_over`). Long-frame
+bursts rejoin contiguous pieces in flight that a visit to the MFSK floor
+cut into 22-byte pieces back up to the long frame (`merge_pieces`); pieces
+the peer holds HARQ bits of stay as they are.
+
+On IONOS SIM (5 minutes, 2–4 seeds, with `harq_stretch`), against the
+ladder: WGN +3 dB 3638 → 7140 B/min, MPG +3 528 → 1416, MPG +6 5116 →
+7004, MPP +3 1904 → 2499, MPG 0 535 → 787; the low end and +10 dB and up
+unchanged within seed noise ([experiments/next-link.md](experiments/next-link.md)).
+
+**Ladder** (`Gear::Ladder`):
 - **Climb**: as clean ACKs come back, capped by the target, quickly while
   far below it. The climb steps over the slice levels and the faster R1
   rates once the SNR allows a full-band level past the first long-guard
@@ -260,6 +294,15 @@ decoding is dropped by both sides and sent fresh. LLRs combine across a
 level change (`llrs_combine_across_a_level_change`), but stored codewords
 are not continued in another guard
 (`stored_codewords_are_not_continued_in_another_guard`).
+
+The increments for the whole stored set go out or none of them do (then
+those codewords are sent fresh again). When a loss has cut the burst back
+to `max_burst_s` and they no longer fit, they may stretch it up to
+`max_burst_long_s` (`harq_stretch`): dropping them near a level's
+threshold restarts every codeword, the next burst fails the same way, and
+the link stalls (16QAM 3/4 pinned at WGN +10 dB delivered nothing in 5
+minutes without it, 13 566 B/min with it). Fresh frames never push the
+stored set past the 64 slots an ACK can name.
 
 ## Slice placement
 
@@ -360,9 +403,12 @@ HF leaves compression off on links; nets compress direct messages
 | `start_margin_db` | 3 dB | |
 | `slice_slots` | on | |
 | `compress` | off | |
+| `gear` | `Goodput` | `Ladder`: the alpha.4 rule |
+| `harq_stretch`, `merge_pieces` | on, on | |
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
-`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`).
+`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_GEAR=ladder`,
+`ION_STRETCH=0`, `ION_MERGE=0`; its header lists the rest).
 
 ## Over the air
 

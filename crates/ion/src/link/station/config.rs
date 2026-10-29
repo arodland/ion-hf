@@ -126,6 +126,32 @@ pub struct Config {
     /// ACKs (`crate::slots`); off: always the centre. The receiving side
     /// names its pick either way, and listens in all three.
     pub slice_slots: bool,
+    /// How the sending side picks each data burst's level.
+    pub gear: Gear,
+    /// HARQ increments may stretch a burst to `max_burst_long_s` rather
+    /// than be dropped (with every stored codeword sent fresh again) when
+    /// they no longer fit the burst length a loss shrank it to.
+    pub harq_stretch: bool,
+    /// Long-frame bursts join contiguous pieces in flight (re-cut small by
+    /// a visit to the MFSK floor) back up to the frame size.
+    pub merge_pieces: bool,
+    /// Lab: every data burst at this level, whatever the reports and
+    /// losses say.
+    #[doc(hidden)]
+    pub pin_level: Option<usize>,
+}
+
+/// The sending side's choice of level ([`Config::gear`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Gear {
+    /// The level expected to move the most: each level's chance from how
+    /// its recent bursts did, relaxing back to what the SNR report
+    /// predicts, times its speed. No holds.
+    #[default]
+    Goodput,
+    /// Up the ladder on clean ACKs to the report's target, down on losses,
+    /// with holds (Ion HF 0.1.0-alpha.4 and before).
+    Ladder,
 }
 
 /// Default [`Config::skip_slices_from`]: one past the first long-guard
@@ -175,6 +201,10 @@ impl Config {
             power_aware: false,
             start_margin_db: Some(3.0),
             slice_slots: true,
+            gear: Gear::Goodput,
+            harq_stretch: true,
+            merge_pieces: true,
+            pin_level: None,
         }
     }
 }
