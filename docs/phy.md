@@ -123,7 +123,7 @@ and is left to the MFSK floor.
 | A | 352 samples (44 ms), period 40 (5 ms): 13 carriers every 200 Hz | 640 samples (80 ms), period 64 (8 ms): 19 carriers every 125 Hz (bins ≡ 0 mod 5) | A period unrelated to 5 ms (next section); pull-in ±62.5 Hz (tested ±50 Hz); 78 empty bins for the noise estimate |
 | Detector window, thresholds | 264; M_ON 0.035, B 0.06, preamble 0.08 | 480 (A − period − ramp − CP); 0.02, 0.05, 0.055 | Longer windows, lower noise floor; M_ON 0.035 missed a quarter of CCIR-poor bursts at −2 dB that sat in an 8 dB fade |
 | Timing: energy window, back-off, plateau | 24, 4 samples, 95% | 68, 6 samples, **99%** | See below |
-| Channel model grid (fd × delay span) | {0.3, 1, 2.5} Hz × {1, 2, 4} ms | {0.3, 1, 2} Hz × {2, 5, 10} ms | |
+| Channel model grid (fd × delay span) | {0.3, 1, 2.5} Hz × {1, 2, 6} ms | {0.3, 1, 2} Hz × {2, 5, 10} ms | |
 | `overhead_s` | 176 ms | 242 ms | |
 | Header-only burst | 272 ms | 342 ms | |
 | Longest burst (1023 symbols) | 24.6 s | 51.4 s | |
@@ -610,7 +610,10 @@ noise over ±4).
      exceed ρ = 0.06, a cheap pre-filter);
    - timing: the 24-sample window that captures the most matched-filter
      energy (middle of its plateau); the FFT window starts 4 samples
-     before it, so any channel whose energy fits in 3.5 ms is ISI-free;
+     before it, so any channel whose energy fits in 3.5 ms is ISI-free.
+     Normal guard only: when an echo lies further out than the energy
+     window holds, the placement is corrected and followed through the
+     burst (see Echoes near the cyclic prefix);
    - frequency: lag 40 → 80 → 160 autocorrelation chain over A's clean
      part, then a data-aided fit of the phase slope of A+B (64 ms of known
      signal) in six segments, worth ~1 dB of header sensitivity at low
@@ -642,7 +645,7 @@ noise over ±4).
      pilots (Hoeher, Kaiser & Robertson 1997), real sinc correlation model
      with a uniform delay profile and a uniform Doppler spectrum (the
      "robust" design of Li, Cimini & Sollenberger 1998). Every burst picks
-     (Doppler, delay span) from {0.3, 1, 2.5} Hz × {1, 2, 4} ms by
+     (Doppler, delay span) from {0.3, 1, 2.5} Hz × {1, 2, 6} ms by
      leave-one-out cross-validation on its own pilots. The weights are
      rescaled to unit sum (the plain MMSE weights shrink the estimate,
      which biases 16QAM), and the error variance is computed exactly for
@@ -729,6 +732,67 @@ poor the second path walks out of the CP at 60 ppm already. Tracked, the
 BER is that of a 0 ppm burst everywhere up to 200 ppm.
 `sample_clock_drift_100ppm` checks ±100 ppm on Normal, NormalWide and
 LongWide and that a clean clock is left alone.
+
+### Echoes near the cyclic prefix
+
+On a two-path channel whose echo is about as long as Normal's 4 ms CP
+(IONOS MPD: 4 ms, 2 Hz), B's matched filter shows the paths 31–32
+samples apart. The 24-sample energy window holds only one of them, and
+its plateau rule put the FFT window before whichever was stronger at
+sync, so the other one arrived up to 17 samples before the window or past
+the CP and all of it turned into ISI: Normal QPSK 1/2 did not reach 10%
+codeword loss at any S:N. Three receiver-only changes, on the Normal
+guard (`phy/rx.rs`, `phy/rx/retime.rs`):
+
+- **Placement at sync.** Every window start is scored by the leakage it
+  leaves: a path `k` samples before the window or past the CP leaks about
+  `k/n` of its energy, weighted by the matched filter's power over the
+  lags within 6 dB of the strongest. When the energy window's placement
+  costs more than 3 samples of such leakage beyond the best placement,
+  the placement within a sample of the best nearest it is taken. With
+  every path inside the energy window nothing changes. (With lags within
+  10 dB and a one-sample tolerance, as first built, noise lags moved the
+  window on MPP near its threshold.) `RxStats::placed` counts the moves.
+- **Re-timing during the burst.** A path faded at sync (either can be
+  20 dB down for a few hundred ms) is not seen there. Each path repeats
+  its CP `n` samples later, so `y[t]·y*[t+n]` around each symbol's
+  window, averaged over about 14 symbols (forgetting factor 0.93, from
+  the first header symbol: B is skipped because A before it repeats with
+  a period dividing `n`), is a box `[a − cp, a)` per path arriving at
+  `a`. The run over half its height around the peak bounds the earliest
+  and latest path (only that run: noise elsewhere crosses the threshold
+  in short spikes, and taking the first and last crossing anywhere stepped
+  the window on noise and cost 0.1 dB on WGN). When the window must move
+  by 4 samples or more to put every path within `[w, w + cp]`, it steps
+  at most 4 samples a symbol, through the same mechanism as the clock
+  drift steps (the grid kept as if the window had not moved).
+  `RxStats::retime_steps` counts the steps.
+- **Re-reference.** Before the data stage the grid is rotated to the
+  burst's mean window, so the Wiener model (centred on the window) sees
+  the paths inside its delay span; without this the re-timing made things
+  worse. Normal's delay-span grid goes to {1, 2, 6} ms: an echo at the
+  CP's length plus the filters' tails once the window straddles both
+  paths (on its own it changes nothing on WGN, MPG or MPP).
+
+Long keeps the plateau rule: its 10 ms CP already holds every echo the
+energy window can, and the changes moved nothing there. The slice keeps
+it too: 13 carriers do not resolve paths to the sample.
+`set_legacy_timing(true)` (test hook) gives the old placement on Normal,
+`set_retiming(false)` turns the re-timing off.
+
+Measured (`tests/rx_lab.rs`, `timing_fer`: Normal QPSK 1/2 bursts of 8 s
+as the link sends them, IONOS 2 paths, S:N in 3 kHz against a sine at
+the peak, 60 bursts per point, both receivers on the same audio, the
+real header decode), S:N at 10% / 30% / 50% codeword loss:
+
+| | WGN | MPG | MPP | MPD |
+|---|---:|---:|---:|---:|
+| Plateau rule only | 4.8 / 4.4 / 4.2 | 9.8 / 6.7 / 5.6 | 7.7 / 6.8 / 6.2 | > 20 (97% lost at 20 dB) |
+| With placement and re-timing | 4.8 / 4.4 / 4.2 | 9.8 / 6.7 / 5.6 | 7.7 / 6.8 / 6.2 | **10.6 / 8.6 / < 8** |
+
+Every WGN, MPG and MPP point is within one codeword of the plateau rule
+(three codewords in 540 at two MPG points); MPD has a floor of 2–7%
+of codewords lost in bursts that fade whole.
 
 ### Long echoes and the channel measurement
 

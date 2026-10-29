@@ -232,6 +232,7 @@ impl PhyRx {
                 mode: DataMode::PLAIN,
             };
         }
+        self.rereference();
         let nsym = ng - pre;
         let cons = Constellation::from_code(h.constellation);
         let mode = h.mode;

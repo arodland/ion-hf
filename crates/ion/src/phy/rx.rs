@@ -15,6 +15,7 @@ use super::{Constellation, HO_COPIES, Numerology, Pilots, check_center, front_en
 
 mod demod;
 mod drift;
+mod retime;
 
 use drift::Drift;
 
@@ -66,6 +67,8 @@ pub struct RxStats {
     pub header_ok: u64,
     pub header_fail: u64,
     pub bursts: u64,
+    pub placed: u64,
+    pub retime_steps: u64,
 }
 
 /// Ring buffer of baseband samples (2.05 s).
@@ -129,10 +132,17 @@ pub struct PhyRx {
     sigma2: [f32; NC_MAX],
     /// Pilot map of the current burst (robust until the header is known).
     map: Map,
-    /// FFT window shift of each grid symbol, samples (clock drift).
+    /// FFT window shift of each grid symbol, samples (clock drift plus
+    /// re-timing), and the re-timing part alone.
     wshift: Vec<i32>,
+    rshift: Vec<i32>,
     drift: Drift,
     track_drift: bool,
+    /// CP correlation around the window, for re-timing during a burst.
+    cpm: Vec<Complex>,
+    cpm_n: usize,
+    retiming: bool,
+    legacy_timing: bool,
     /// Impulse blanker on the audio, how many of the DEC audio samples
     /// around each baseband sample it zeroed (ring like `ring`), and the
     /// blanked fraction of each grid symbol's FFT window.
@@ -257,8 +267,16 @@ impl PhyRx {
             sigma2: [0.0; NC_MAX],
             map: Map::new(l, l.pre_syms(), Pilots::Robust),
             wshift: vec![0; max_g],
+            rshift: vec![0; max_g],
             drift: Drift::default(),
             track_drift: true,
+            cpm: vec![Complex::ZERO; 4 * l.cp],
+            cpm_n: 0,
+            // Only the Normal guard: Long's CP holds every echo the
+            // energy window can, and the slice's 13 carriers do not
+            // resolve paths to the sample.
+            retiming: matches!(num, Numerology::Normal | Numerology::NormalWide),
+            legacy_timing: !matches!(num, Numerology::Normal | Numerology::NormalWide),
             blanker: Blanker::new(center_hz),
             blanked: vec![0; RING],
             bfrac: vec![0.0; max_g],
@@ -486,6 +504,9 @@ impl PhyRx {
                     self.map = Map::new(l, l.pre_syms(), Pilots::Robust);
                     self.drift = Drift::default();
                     self.wshift[0] = 0;
+                    self.rshift[0] = 0;
+                    self.cpm.fill(Complex::ZERO);
+                    self.cpm_n = 0;
                     self.need = self.window_start(0) + l.n as u64;
                 } else {
                     self.fail();
@@ -499,6 +520,11 @@ impl PhyRx {
                 }
                 self.extract(g);
                 self.drift_update(g);
+                // Not B: the samples before its CP are preamble A, which
+                // repeats with a period dividing n.
+                if g > 1 {
+                    self.cp_track(g - 1);
+                }
                 self.g_next += 1;
                 let pre = l.pre_syms();
                 let ho_end = pre + (HO_COPIES - 1) * l.hdr_syms;
@@ -551,7 +577,8 @@ impl PhyRx {
                     self.need = self.written;
                 } else {
                     let gn = self.g_next;
-                    self.wshift[gn] = self.next_shift(gn);
+                    self.rshift[gn] = self.rshift[gn - 1] + self.retime_step();
+                    self.wshift[gn] = self.next_shift(gn) + self.rshift[gn];
                     self.need = self.window_start(gn) + l.n as u64;
                 }
             }
@@ -572,6 +599,20 @@ impl PhyRx {
     #[doc(hidden)]
     pub fn set_drift_tracking(&mut self, on: bool) {
         self.track_drift = on;
+    }
+
+    /// Test hook: turn the in-burst re-timing off (on by default).
+    #[doc(hidden)]
+    pub fn set_retiming(&mut self, on: bool) {
+        self.retiming = on;
+    }
+
+    /// Test hook: the window placement before long echoes were handled
+    /// (energy-window plateau only, no re-timing).
+    #[doc(hidden)]
+    pub fn set_legacy_timing(&mut self, on: bool) {
+        self.legacy_timing = on;
+        self.retiming = !on;
     }
 
     /// Impulse blanker ([`crate::blanker`]) on (the default) or off.
@@ -689,6 +730,42 @@ impl PhyRx {
         let fp = (tm..tm + e_win).find(|&d| self.corr[d] >= 0.3 * cmax).unwrap_or(tm);
         self.first_path = lo + fp as u64;
         self.win0 = tau - l.b_backoff as u64;
+        // Echoes longer than the energy window (MPD: 4 ms on a 4 ms CP)
+        // leave one path outside it, and all of that path turns into ISI.
+        // A path arriving `k` samples before the window or after its CP
+        // leaks about k/n of its energy, so when the window above costs
+        // more than 3 samples of such leakage (power-weighted, over the
+        // lags within 6 dB of the strongest: at 10 dB, noise lags moved the
+        // window on MPP near threshold) beyond the best placement, take
+        // the placement within a sample of the best nearest the original.
+        let cmax = self.corr[..nl].iter().fold(0f32, |m, &v| m.max(v));
+        let paths: Vec<(i64, f32)> = (0..nl)
+            .filter(|&d| self.corr[d] >= 0.25 * cmax)
+            .map(|d| (d as i64, self.corr[d]))
+            .collect();
+        let ptot: f32 = paths.iter().map(|p| p.1).sum();
+        let cp = l.cp as i64;
+        let cost = |s: i64| -> f32 {
+            paths
+                .iter()
+                .map(|&(d, p)| p * ((s - d).max(0) + (d - s - cp).max(0)) as f32)
+                .sum::<f32>()
+                / ptot
+        };
+        let s0 = tm as i64 - l.b_backoff as i64;
+        let (first, last) = (paths[0].0, paths[paths.len() - 1].0);
+        let cands = (last - cp).min(s0)..=first.max(s0);
+        let cmin = cands.clone().map(cost).fold(f32::INFINITY, f32::min);
+        if !self.legacy_timing && cost(s0) > cmin + 3.0 {
+            let s = cands
+                .filter(|&s| cost(s) <= cmin + 1.0)
+                .min_by_key(|&s| (s - s0).abs())
+                .unwrap_or(s0);
+            if s != s0 {
+                self.stats.placed += 1;
+            }
+            self.win0 = (lo as i64 + s) as u64;
+        }
         self.df_res = 0.0;
 
         // Fine frequency from A's clean region (every path inside A):
