@@ -476,7 +476,13 @@ impl PhyRx {
             let pre_n: f32 = self.sigma2[..nc].iter().sum();
             10.0 * (dd / pre_n.max(1e-30)).max(1e-6).log10()
         };
-        let chan = self.measure(&zdd, nsym, snr_db, &eesm, excess_db);
+        let mut chan = self.measure(&zdd, nsym, snr_db, &eesm, excess_db);
+        if self.weak_sync {
+            // Timing from a preamble the receiver could not see: the
+            // spreads would be noise (the effective SNR stays).
+            chan.delay_ms = f32::NAN;
+            chan.doppler_hz = f32::NAN;
+        }
         RxBurst {
             constellation: cons,
             user: h.user,
@@ -485,7 +491,7 @@ impl PhyRx {
             freq_offset_hz: (self.f_hz + self.df_res) as f32,
             start_sample: self.start_sample(),
             numerology: self.num,
-            extra: 0,
+            extra: h.extra,
             header_only: false,
             pilots: map.pilots,
             clock_ppm: (eps * 1e6) as f32,

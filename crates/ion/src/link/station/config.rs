@@ -126,7 +126,52 @@ pub struct Config {
     /// ACKs (`crate::slots`); off: always the centre. The receiving side
     /// names its pick either way, and listens in all three.
     pub slice_slots: bool,
+    /// How the sending side picks each data burst's level.
+    pub gear: Gear,
+    /// HARQ increments may stretch a burst to `max_burst_long_s` rather
+    /// than be dropped (with every stored codeword sent fresh again) when
+    /// they no longer fit the burst length a loss shrank it to.
+    pub harq_stretch: bool,
+    /// Long-frame bursts join contiguous pieces in flight (re-cut small by
+    /// a visit to the MFSK floor) back up to the frame size.
+    pub merge_pieces: bool,
+    /// Offer (calling) or accept (called) MFSK cues
+    /// ([`crate::link::frame::caps::CUE`]): used only when both ends have
+    /// it on. A full-band OFDM data burst then goes behind a cue
+    /// (`link::audio::transmit`) while the SNR the gear aims by is below
+    /// `cue_below_db`: the cue is heard 11–14 dB below the OFDM header.
+    pub cue: bool,
+    /// See `cue`: dB in 2.4 kHz, as the ACKs report it (the effective SNR
+    /// with `eff_snr`).
+    pub cue_below_db: f32,
+    /// With a cue: when the HARQ increments for everything the peer
+    /// holds do not fit the burst, send those that do (the longest stored
+    /// first) and name how many in the cue, rather than stretching the
+    /// burst (`harq_stretch`, still used for bursts without a cue).
+    pub harq_partial: bool,
+    /// Lab: every data burst at this level, whatever the reports and
+    /// losses say.
+    #[doc(hidden)]
+    pub pin_level: Option<usize>,
 }
+
+/// The sending side's choice of level ([`Config::gear`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Gear {
+    /// The level expected to move the most: each level's chance from how
+    /// its recent bursts did, relaxing back to what the SNR report
+    /// predicts, times its speed. No holds.
+    #[default]
+    Goodput,
+    /// Up the ladder on clean ACKs to the report's target, down on losses,
+    /// with holds (Ion HF 0.1.0-alpha.4 and before).
+    Ladder,
+}
+
+/// Default [`Config::cue_below_db`]: IONOS S:N about +9 dB, where the
+/// OFDM data header still misses bursts on the fading channels
+/// (`docs/experiments/next-link.md`, the cue rule).
+pub const CUE_BELOW_DB: f32 = 7.0;
 
 /// Default [`Config::skip_slices_from`]: one past the first long-guard
 /// level.
@@ -175,6 +220,13 @@ impl Config {
             power_aware: false,
             start_margin_db: Some(3.0),
             slice_slots: true,
+            gear: Gear::Goodput,
+            harq_stretch: true,
+            merge_pieces: true,
+            cue: true,
+            cue_below_db: CUE_BELOW_DB,
+            harq_partial: true,
+            pin_level: None,
         }
     }
 }

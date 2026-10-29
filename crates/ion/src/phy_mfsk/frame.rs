@@ -105,21 +105,26 @@ pub fn gray_inv(mut g: usize) -> usize {
 pub enum Kind {
     HeaderOnly,
     Data,
+    /// The header of a composite burst: user and extra, followed by an
+    /// OFDM burst ([`super::modulate_cue`]).
+    Cue,
 }
 
 /// Header hypotheses in the order the receiver tries them (shortest
 /// first).
-pub const HYPS: [(MfskMode, Kind); 4] = [
+pub const HYPS: [(MfskMode, Kind); 6] = [
     (MfskMode::R1, Kind::HeaderOnly),
+    (MfskMode::R1, Kind::Cue),
     (MfskMode::R1, Kind::Data),
     (MfskMode::R0, Kind::HeaderOnly),
+    (MfskMode::R0, Kind::Cue),
     (MfskMode::R0, Kind::Data),
 ];
 
 /// Information bits of a header, CRC included.
 pub fn header_info_bits(kind: Kind) -> usize {
     match kind {
-        Kind::HeaderOnly => 16 + 16 + 16,
+        Kind::HeaderOnly | Kind::Cue => 16 + 16 + 16,
         Kind::Data => 16 + 16 + 16 + 16,
     }
 }
@@ -144,6 +149,8 @@ fn crc_init(mode: MfskMode, kind: Kind) -> u16 {
         (MfskMode::R0, Kind::Data) => 0x1D0F,
         (MfskMode::R1, Kind::HeaderOnly) => 0xB4C8,
         (MfskMode::R1, Kind::Data) => 0x6A39,
+        (MfskMode::R0, Kind::Cue) => 0x93E5,
+        (MfskMode::R1, Kind::Cue) => 0x2C7B,
     }
 }
 

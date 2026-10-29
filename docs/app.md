@@ -10,7 +10,7 @@ top. It drives the radio over TCI
 
 ```text
 ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
-      [--setup] [--shots DIR] [--quit S]
+      [--setup] [--shots DIR] [--quit S] [--gear goodput|ladder]
 ```
 
 - `--loopback`: no radio; simulated stations answer (below). `--loop-snr`
@@ -21,6 +21,8 @@ ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
 - `--setup`: start on Setup.
 - `--shots DIR`, `--quit S`: save the window to `DIR` every 15 s and close
   after `S` seconds (screenshots, scripted checks).
+- `--gear`: the link's choice of level for this run, over the `gear`
+  setting (below).
 
 ## Settings
 
@@ -35,6 +37,12 @@ the log (written by a release build started without a terminal):
 
 **Portable:** with an `ionhf.toml` (even an empty one) next to the program,
 Ion keeps everything in that folder instead.
+
+`gear` (no screen of its own) is how the sending side picks each data
+burst's level: `"goodput"` (the default) by expected throughput,
+`"ladder"` up and down the ladder as Ion HF 0.1.0-alpha.4 did, for an A/B
+on the air ([link.md](link.md), Gear shifting). Each end chooses for the
+bursts it sends; it takes effect from the next link.
 
 ## Window
 
@@ -123,6 +131,7 @@ its own IONOS channel (`ion_dsp::ionos`), in real time.
 ```
 ionhf --sim [--stations 2] [--ionos WGN|MPG|MPM|MPP|MPD] [--paths 2]
       [--snr 10[,DB...]] [--port 8300] [--calls N0AAA,N0BBB] [--seed 1]
+      [--gear goodput|ladder]
 ```
 
 `--snr` is what each station hears, in station order (the last value

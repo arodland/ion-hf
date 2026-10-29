@@ -406,6 +406,7 @@ impl BcastStation {
         self.sending.reverse();
         self.stats.frames_sent += take.len() as u32;
         let b = Outgoing {
+            cue: false,
             wave: LADDER[level].wave,
             code: level,
             user: user_bits(level, id, 0),

@@ -610,6 +610,7 @@ impl NetStation {
             })
             .collect();
         Outgoing {
+            cue: false,
             wave: LADDER[level].wave,
             code: level,
             user: user_bits(level, self.id, 0),

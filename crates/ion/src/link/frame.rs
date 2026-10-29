@@ -63,6 +63,21 @@ pub mod flags {
     /// ConnReq: the caller can compress its stream (`link::compress`,
     /// record type CM1) and asks the called station to do the same.
     pub const COMPRESS: u8 = 8;
+    /// ConnReq: where the caller's [`super::caps`] go (bits 4–7).
+    pub const CAPS_SHIFT: u32 = 4;
+}
+
+/// What a station can do beyond the alpha.4 link, offered in the ConnReq
+/// (`flags` bits 4–7) and agreed in the ConnAck (`extra` bits 11–14): the
+/// called station answers with those it has too, and the link uses only
+/// what both have. A station that knows none leaves them clear and ignores
+/// them, so it agrees to nothing.
+pub mod caps {
+    /// MFSK cues in front of full-band OFDM data bursts, and partial HARQ
+    /// increments counted in the cue (`link::audio::transmit`).
+    pub const CUE: u8 = 1;
+    /// Every bit the fields hold.
+    pub const MASK: u8 = 0xF;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,6 +225,8 @@ pub enum Tiny {
         class: ChanClass,
         /// Its slot (bits 9–10; see [`Tiny::Ack`]).
         slot: u8,
+        /// The [`caps`] both ends have (bits 11–14).
+        caps: u8,
     },
     /// "Repeat your last ACK."
     Poll,
@@ -271,12 +288,14 @@ impl Tiny {
                 compress,
                 class,
                 slot,
+                caps,
             } => (
                 2,
                 snr_q(snr_db, 6) as u16
                     | (class.bits() as u16) << 6
                     | (compress as u16) << 8
-                    | ((slot as u16).min(2) & 3) << 9,
+                    | ((slot as u16).min(2) & 3) << 9
+                    | ((caps & caps::MASK) as u16) << 11,
             ),
             Tiny::Poll => (3, 0),
             Tiny::Turn { snr_db } => (4, snr_db.map_or(0, |s| 1 << 6 | snr_q(s, 6) as u16)),
@@ -313,6 +332,7 @@ impl Tiny {
                     3 => 0,
                     s => s as u8,
                 },
+                caps: (extra >> 11) as u8 & caps::MASK,
             },
             3 => Tiny::Poll,
             4 => Tiny::Turn {
@@ -417,6 +437,7 @@ mod tests {
                 compress: false,
                 class: ChanClass::default(),
                 slot: 0,
+                caps: 0,
             },
             Tiny::ConnAck {
                 snr_db: 3.0,
@@ -426,12 +447,14 @@ mod tests {
                     doppler: true,
                 },
                 slot: 1,
+                caps: caps::CUE,
             },
             Tiny::ConnAck {
                 snr_db: 3.0,
                 compress: true,
                 class: ChanClass::default(),
                 slot: 2,
+                caps: caps::MASK,
             },
             Tiny::Poll,
             Tiny::Turn { snr_db: None },
@@ -475,6 +498,7 @@ mod tests {
             compress: false,
             class: ChanClass::default(),
             slot: 0,
+            caps: 0,
         }
         .encode();
         assert_eq!(
@@ -483,8 +507,27 @@ mod tests {
                 snr_db: 39.0,
                 compress: false,
                 class: ChanClass::default(),
-                slot: 0
+                slot: 0,
+                caps: 0,
             })
         );
+    }
+
+    #[test]
+    fn a_conn_ack_without_caps_is_as_alpha4_sent_it() {
+        let ack = |caps| Tiny::ConnAck {
+            snr_db: 6.0,
+            compress: true,
+            class: ChanClass::default(),
+            slot: 1,
+            caps,
+        };
+        let (k, old) = ack(0).encode();
+        assert_eq!(old >> 11, 0);
+        let (_, new) = ack(caps::CUE).encode();
+        assert_eq!(new, old | 1 << 11);
+        // What alpha.4 reads of it: bits 0–10, the same either way.
+        assert_eq!(new & 0x7FF, old);
+        assert_eq!(Tiny::decode(k, old), Some(ack(0)));
     }
 }

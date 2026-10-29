@@ -255,6 +255,8 @@ pub struct AirEvent {
     pub code: usize,
     pub frames: usize,
     pub delivered: bool,
+    /// Sent behind a cue ([`Outgoing::cue`]).
+    pub cue: bool,
 }
 
 /// Where the air time of a run went, for the data bursts of one ladder
@@ -440,7 +442,8 @@ impl Sim {
             if e.code < LADDER.len() {
                 cycle = Some((e.code, e.from));
                 let a = &mut out.levels[e.code];
-                let pre = self.air.duration(e.wave, e.code, 1).min(dur);
+                let cue = if e.cue { super::station::cue_s() } else { 0.0 };
+                let pre = (self.air.duration(e.wave, e.code, 1) + cue).min(dur);
                 a.bursts += 1;
                 a.preamble_s += pre;
                 a.data_s += dur - pre;
@@ -478,7 +481,7 @@ impl Sim {
                 continue;
             }
             if let Some(b) = self.stations[s].poll_tx(t) {
-                let end = t + self.air.duration(b.wave, b.code, b.coded_bits());
+                let end = t + b.duration(&*self.air);
                 self.busy_until[s] = end;
                 let inc = self.medium.carry(s, &b, t, end);
                 self.log.push(AirEvent {
@@ -489,6 +492,7 @@ impl Sim {
                     code: b.code,
                     frames: b.frames.len(),
                     delivered: inc.is_some(),
+                    cue: b.cue,
                 });
                 self.in_flight.push((end, s, inc));
             }

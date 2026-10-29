@@ -85,7 +85,16 @@ of the carriers.
 The caller sends a ConnReq frame (payload "FROMCALL TOCALL" and its
 highest level) in the floor waveform; the called station answers with a
 ConnAck, a header-only burst carrying the SNR it heard the call at, its
-channel class and slice slot, and whether both directions will compress.
+channel class and slice slot, whether both directions will compress, and
+the capabilities both ends have.
+
+**Capabilities** (`frame::caps`): what a station can do beyond the alpha.4
+link, four bits offered in the ConnReq's flags (bits 4–7) and answered in
+the ConnAck's `extra` (bits 11–14) with those the called station has too.
+The link uses only what both have; a station that knows none (Ion HF
+0.1.0-alpha.4 and before) leaves them clear and ignores them, so it agrees
+to nothing and never sees anything new on the air. One is defined:
+`caps::CUE` (MFSK cue, below).
 The call is tried `retries` (6) times. The first data burst then goes at
 the highest level the ConnAck's SNR allows, less `start_margin_db` (3 dB:
 the report was measured on the MFSK call, stronger than OFDM on the air),
@@ -106,7 +115,7 @@ let the sender re-cut unacknowledged data into the frame size of whatever
 level comes next, larger or smaller. The CRC-32 covers everything before
 it. ACK flags: the receiving side wants the turn, wants to disconnect, or
 has stored the missing frames for HARQ; on a ConnReq, the caller can
-compress.
+compress, and its capabilities (Connect).
 
 **Tiny messages** ride in a header-only burst: 4 bits of kind in the
 burst's `user` word plus a 16-bit `extra`, for messages that must get
@@ -149,13 +158,19 @@ cycle, and at most `max_burst_long_s` (32 s). That is long for the slow
 levels (MFSK R0 has 2.3 s of preamble and header and a 1.8 s ACK for 5.7 s
 of data in an 8 s burst) and about `max_burst_s` from the long-guard levels
 up. Any loss, level change or jump in the SNR goes back to `max_burst_s`.
+HARQ increments may stretch a burst up to `max_burst_long_s`
+(`harq_stretch`) rather than be dropped when a loss has shrunk the burst
+below what they need (HARQ, below).
 `burst_climb_db` (off) would hold bursts short while the SNR is close to a
 faster level's entry; it measured even over short transfers and worse over
 20 kB.
 
 ## Gear shifting
 
-The sending side picks each burst's level from the peer's ACKs:
+The sending side picks each burst's level from the peer's ACKs, by
+expected throughput (`gear`, `Gear::Goodput`) or, selectable for an A/B
+on the air, up and down the ladder as before (`Gear::Ladder`, the rule of
+Ion HF 0.1.0-alpha.4).
 
 - **Aim** (`smooth_target`): from a cautious recent SNR, the lower of the
   last report and the median of the last three. On a slow-fading channel
@@ -165,6 +180,34 @@ The sending side picks each burst's level from the peer's ACKs:
   past its threshold loses a few frames, and with HARQ each costs a
   fraction of a frame (−1 dB beat the +1 dB used without HARQ by 6.6% over
   the audio link).
+
+**Goodput** (the default). After each ACK the next level is the one
+expected to move the most: its chance of getting a frame through times its
+speed (payload bits per second of air in a `max_burst_s` burst, preamble
+and header included). The chance is a level's observed success (the share
+of fresh frames delivered, newest burst weighted 0.3), fading back with a
+180 s time constant to what the SNR report predicts: a logistic in the
+report's distance from the level's threshold plus margin, 0.88 at the
+threshold and 0.12 a dB below (the codes' waterfall is that steep). Each
+further whole-burst loss at a level doubles how long its record is
+remembered (at most 16×). Levels more than 2 dB above the report are not
+tried, nor waveforms the channel class rules out; a change of level must
+promise 15% more, 32% across frame sizes (which re-cut what is in flight).
+There are no holds: a level that keeps losing scores itself out. A whole
+OFDM burst lost with 4 dB to spare is the channel's doing (fast fading, an
+echo past the guard), and counts as a loss at the other levels of its
+waveform and the faster ones whose guard is no longer, so a dead waveform
+is not found out level by level (`a_dead_waveform_is_not_retried_over_and_over`). Long-frame
+bursts rejoin contiguous pieces in flight that a visit to the MFSK floor
+cut into 22-byte pieces back up to the long frame (`merge_pieces`); pieces
+the peer holds HARQ bits of stay as they are.
+
+On IONOS SIM (5 minutes, 2 seeds, no cue), against alpha.4's ladder:
+WGN +3 dB 3638 → 7140 B/min, MPG +3 528 → 1348, MPG +6 5115 → 7004, MPP +3
+1904 → 2499, MPG 0 499 → 733; +10 dB unchanged within seed noise
+([experiments/next-link.md](experiments/next-link.md)).
+
+**Ladder** (`Gear::Ladder`):
 - **Climb**: as clean ACKs come back, capped by the target, quickly while
   far below it. The climb steps over the slice levels and the faster R1
   rates once the SNR allows a full-band level past the first long-guard
@@ -260,6 +303,63 @@ decoding is dropped by both sides and sent fresh. LLRs combine across a
 level change (`llrs_combine_across_a_level_change`), but stored codewords
 are not continued in another guard
 (`stored_codewords_are_not_continued_in_another_guard`).
+
+The increments for the whole stored set go out or none of them do (then
+those codewords are sent fresh again). When a loss has cut the burst back
+to `max_burst_s` and they no longer fit, they may stretch it up to
+`max_burst_long_s` (`harq_stretch`): dropping them near a level's
+threshold restarts every codeword, the next burst fails the same way, and
+the link stalls (16QAM 3/4 pinned at WGN +10 dB delivered nothing in 5
+minutes without it, 13 566 B/min with it). Fresh frames never push the
+stored set past the 64 slots an ACK can name.
+
+## MFSK cue
+
+At low S:N most full-band OFDM data bursts that are lost are never heard:
+the OFDM header (and from about −2 dB the preamble check) fails, while the
+data with HARQ could still get through. On a link that agreed to
+`caps::CUE` (`Config::cue`, on), a full-band OFDM data burst (normal or
+long guard) goes out behind an **MFSK cue** while the SNR the gear aims by
+is below `cue_below_db` (7 dB, IONOS S:N about +9 dB; above it the OFDM
+header is heard anyway and the cue only costs air time):
+
+```text
+| MFSK R1 cue: preamble 16 × 28 ms, header 48 × 14 ms | OFDM burst as without it |
+```
+
+- The cue is an MFSK header-only burst of its own kind (`Kind::Cue`, its
+  own CRC initial values, never read as a tiny message or a data header),
+  1.12 s: the burst's 16 `user` bits, 10 bits of OFDM data-symbol count
+  and 6 bits of HARQ parity field (below). The rest of the OFDM header
+  follows from the level in `user`.
+- It is a steady carrier at `TX_LEVEL`, exactly as loud as every MFSK
+  burst; the OFDM air gain and level trim apply to the OFDM part only
+  (`a_cue_is_no_louder_than_mfsk_and_leaves_the_ofdm_as_it_was`).
+- The receivers run MFSK first, in 20 ms blocks, so a decoded cue reaches
+  the OFDM receiver while the burst is still in its 2 s ring
+  (`PhyRx::cue`): detection is skipped, the header is taken from the cue,
+  and the burst is not rejected on its preamble correlation (the cue's
+  CRC vouched for it). A burst taken on its cue alone reports its SNR but
+  no delay or Doppler spread, whose timing came from noise.
+- The cue is part of the burst everywhere its length counts: the burst
+  budget (`max_burst_s` holds the cue too), the level's worth in the gear
+  shift, `clean_burst_s`, the air time.
+- **Partial HARQ increments** (`harq_partial`, on): behind a cue, when the
+  increments for the whole stored set do not fit the burst, those that do
+  go (the longest stored first) and the cue names how many; the receiver
+  continues those and keeps the rest stored ahead of the burst's failures.
+  A partial burst's check bits count one more than the stored set, so a
+  receiver that missed the cue (and so the count) keeps nothing rather
+  than misreading the layout. Bursts without a cue use `harq_stretch`.
+
+Heard 90% of the time (IONOS SIM, S:N against the burst's peak in 3 kHz):
+today's full-band data header at +1.4…+1.8 dB on WGN, +4…+4.7 on MPG,
++3.4…+6 on MPP and not by +6 dB on MPD; with the R1 cue at −11.0, −7.2,
+−8.0 and −8.4 dB (the `exp-mfskhdr` lab). With the goodput shift, MPG
++3 dB 1348 → 2933 B/min and MPP +3 dB 2499 → 3910
+([experiments/next-link.md](experiments/next-link.md), the cue rule).
+`tests/cue.rs` checks a cue-less peer gets no cue (as caller and as called
+station) and that two stations with cues use them.
 
 ## Slice placement
 
@@ -360,9 +460,14 @@ HF leaves compression off on links; nets compress direct messages
 | `start_margin_db` | 3 dB | |
 | `slice_slots` | on | |
 | `compress` | off | |
+| `gear` | `Goodput` | `Ladder`: the alpha.4 rule |
+| `harq_stretch`, `merge_pieces` | on, on | |
+| `cue`, `cue_below_db`, `harq_partial` | on, 7 dB, on | MFSK cue |
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
-`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`).
+`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_GEAR=ladder`,
+`ION_STRETCH=0`, `ION_MERGE=0`, `ION_CUE=0`, `ION_CUE_DB`, `ION_PARTIAL=0`;
+its header lists the rest).
 
 ## Over the air
 

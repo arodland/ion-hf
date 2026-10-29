@@ -1,6 +1,8 @@
 //! Bursts to audio and back: frames through the LDPC codec and the right
 //! PHY (MFSK floor, slice, long-guard or normal OFDM), and every receiver
-//! listening at once. Tiny messages are header-only bursts.
+//! listening at once. Tiny messages are header-only bursts. A cued burst
+//! ([`Outgoing::cue`]) goes out behind an MFSK cue that the receivers hand
+//! to the OFDM receiver (`PhyRx::cue`).
 
 use ion_dsp::channel::{Channel, Profile, add_awgn};
 use ion_dsp::dsp::{AUDIO_RATE, NoiseGen, noise_sigma};
@@ -8,10 +10,10 @@ use ion_dsp::ionos::{self, Ionos};
 
 use super::harq::Soft;
 use super::sim::{Medium, ModelAir};
-use super::station::{Air, CONTROL, Config, Incoming, Outgoing, TINY, frame_bits, user_code};
+use super::station::{Air, CONTROL, CUE_MODE, Config, Incoming, Outgoing, TINY, frame_bits, user_code};
 use crate::fec;
 use crate::level::{FrameSize, Guard, LADDER, Wave};
-use crate::phy::{self, Constellation, Numerology, PhyRx, Pilots, TxOptions};
+use crate::phy::{self, Constellation, DataMode, Numerology, PhyRx, Pilots, TxOptions};
 use crate::phy_mfsk::{self, MfskBurst, MfskRx};
 use crate::slots::{OFFSETS_HZ, SLOTS, SlotMeter};
 
@@ -162,9 +164,10 @@ pub fn level_trim_db(code: usize) -> f32 {
 
 /// [`transmit`] as it goes on the air: OFDM bursts scaled by `ofdm_gain`
 /// and their level's [`level_trim_db`], together never more than
-/// [`OFDM_AIR_GAIN_MAX_DB`] above the steady carriers.
+/// [`OFDM_AIR_GAIN_MAX_DB`] above the steady carriers. A cue stays at
+/// `TX_LEVEL`, as loud as every MFSK burst: the gain is the OFDM part's.
 pub fn transmit_with(b: &Outgoing, ofdm_gain: f32) -> Vec<f32> {
-    let mut a = transmit(b);
+    let mut a = modulate(b);
     if matches!(b.wave, Wave::Ofdm(_)) {
         let cap = 10f32.powf(OFDM_AIR_GAIN_MAX_DB / 20.0);
         let g = (ofdm_gain * 10f32.powf(level_trim_db(b.code) / 20.0)).min(cap);
@@ -174,7 +177,66 @@ pub fn transmit_with(b: &Outgoing, ofdm_gain: f32) -> Vec<f32> {
             }
         }
     }
-    a
+    behind_cue(b, a)
+}
+
+/// Data symbols field of a cue's `extra`; the 6 bits above it carry the
+/// burst's `extra` (its HARQ parity field).
+const CUE_NSYM_BITS: u32 = 10;
+
+/// `a` (burst `b`'s audio) behind `b`'s cue, if it has one: an MFSK
+/// header-only burst of its own kind carrying `b.user`, and in its `extra`
+/// the OFDM data symbols and `b.extra`. The rest of the OFDM header follows
+/// from the level in `user`.
+fn behind_cue(b: &Outgoing, a: Vec<f32>) -> Vec<f32> {
+    let Wave::Ofdm(g) = b.wave else {
+        return a;
+    };
+    if !b.cue {
+        return a;
+    }
+    debug_assert!(
+        g != Guard::Slice && b.code < LADDER.len(),
+        "a cue is for full-band data bursts"
+    );
+    let (c, p) = shape(b.code);
+    let nsym = phy::data_symbols_with(numerology(g), p, c, b.coded_bits());
+    let extra = nsym as u16 | (b.extra & 0x3F) << CUE_NSYM_BITS;
+    let mut out = phy_mfsk::modulate_cue(CUE_MODE, b.user, extra, CENTER_HZ);
+    out.extend_from_slice(&a);
+    out
+}
+
+/// What a cue announces: the OFDM guard and the burst as the OFDM receiver
+/// should expect it. `None` for a cue no full-band level matches.
+pub fn cue_of(b: &MfskBurst) -> Option<(Guard, phy::Cue)> {
+    let code = user_code(Wave::Ofdm(Guard::Normal), b.user);
+    let lv = LADDER.get(code)?;
+    let g = match lv.wave {
+        Wave::Ofdm(g @ (Guard::Normal | Guard::Long)) => g,
+        _ => return None,
+    };
+    let nsym = (b.extra & ((1 << CUE_NSYM_BITS) - 1)) as usize;
+    if nsym == 0 || nsym > phy::MAX_DATA_SYMBOLS {
+        return None;
+    }
+    let opt = tx_options(code);
+    Some((
+        g,
+        phy::Cue {
+            start: b.start_sample + phy_mfsk::cue_samples(b.mode) as u64,
+            f_hz: b.freq_offset_hz,
+            constellation: lv.constellation,
+            data_symbols: nsym,
+            user: b.user,
+            extra: b.extra >> CUE_NSYM_BITS,
+            pilots: lv.pilots,
+            mode: DataMode::new(opt.spread, opt.data_gain_db),
+            // The cue's own CRC vouched for the burst: it is taken
+            // whatever its preamble correlation.
+            trust: true,
+        },
+    ))
 }
 
 /// GF(32) code rate of the short frames of burst `code` (control frames
@@ -206,8 +268,13 @@ fn encode_frames_nb(b: &Outgoing) -> Vec<u8> {
         .collect()
 }
 
-/// Encodes and modulates a burst.
+/// Encodes and modulates a burst (behind its cue, if it has one).
 pub fn transmit(b: &Outgoing) -> Vec<f32> {
+    behind_cue(b, modulate(b))
+}
+
+/// [`transmit`] without the cue.
+fn modulate(b: &Outgoing) -> Vec<f32> {
     match b.wave {
         Wave::Mfsk(m) => {
             debug_assert!(!is_long(b.code), "long frames on MFSK");
@@ -215,13 +282,15 @@ pub fn transmit(b: &Outgoing) -> Vec<f32> {
         }
         Wave::Ofdm(g) => {
             let (c, _) = shape(b.code);
-            // A tiny message has no frames: a header-only burst.
+            // A tiny message has no frames: a header-only burst. A data
+            // burst's header has no room for `extra`.
             let bits = encode_frames(b);
+            let extra = if bits.is_empty() { b.extra } else { 0 };
             phy::modulate_full(
                 numerology(g),
                 c,
                 b.user,
-                b.extra,
+                extra,
                 &bits,
                 center_of(b),
                 &tx_options(b.code),
@@ -292,16 +361,17 @@ pub fn decode_alone(inc: &Incoming) -> Vec<Option<Vec<u8>>> {
 pub fn decode(b: &phy::RxBurst) -> Incoming {
     let code = user_code(Wave::Ofdm(guard_of(b.numerology)), b.user);
     // A header-only burst is a tiny message whatever its code claims.
-    let (code, extra, (frames, soft)) = if b.header_only {
-        (TINY, b.extra, (Vec::new(), None))
+    let (code, frames, soft) = if b.header_only {
+        (TINY, Vec::new(), None)
     } else {
-        (code, 0, split(code, &b.llrs))
+        let (frames, soft) = split(code, &b.llrs);
+        (code, frames, soft)
     };
     Incoming {
         wave: Wave::Ofdm(guard_of(b.numerology)),
         code,
         user: b.user,
-        extra,
+        extra: b.extra,
         frames,
         soft,
         snr_db: b.snr_db,
@@ -380,7 +450,11 @@ pub struct Receivers {
     meter: SlotMeter,
     /// The meter's pick, stamped on every burst heard.
     slot: u8,
+    cues_heard: u64,
 }
+
+/// Audio samples [`Receivers`] hand each receiver at a time (20 ms).
+const RUN_BLOCK: usize = 960;
 
 /// How old the meter's frames are before they count: a burst decoded at
 /// its end masks the frames it covered, and in real time a busy receiver
@@ -401,6 +475,7 @@ impl Receivers {
             mfsk_out: Vec::new(),
             meter: SlotMeter::new(CENTER_HZ, AUDIO_RATE, METER_LAG_S),
             slot: 0,
+            cues_heard: 0,
         }
     }
 
@@ -414,14 +489,33 @@ impl Receivers {
         let from = self.meter.samples();
         self.meter.push(samples);
         let to = self.meter.samples();
-        self.ofdm.process(samples, &mut self.ofdm_out);
-        self.ofdm_long.process(samples, &mut self.ofdm_out);
-        self.ofdm_slot.resize(self.ofdm_out.len(), None);
-        for (k, rx) in self.ofdm_slice.iter_mut().enumerate() {
-            rx.process(samples, &mut self.ofdm_out);
-            self.ofdm_slot.resize(self.ofdm_out.len(), Some(k));
+        // In blocks, MFSK first: a cue reaches the OFDM receiver while the
+        // burst it announces is still in that receiver's ring (2 s).
+        for block in samples.chunks(RUN_BLOCK) {
+            let m0 = self.mfsk_out.len();
+            self.mfsk.process(block, &mut self.mfsk_out);
+            let mut k = m0;
+            while k < self.mfsk_out.len() {
+                if !self.mfsk_out[k].cue {
+                    k += 1;
+                    continue;
+                }
+                let b = self.mfsk_out.remove(k);
+                self.cues_heard += 1;
+                match cue_of(&b) {
+                    Some((Guard::Long, c)) => self.ofdm_long.cue(c),
+                    Some((_, c)) => self.ofdm.cue(c),
+                    None => {}
+                }
+            }
+            self.ofdm.process(block, &mut self.ofdm_out);
+            self.ofdm_long.process(block, &mut self.ofdm_out);
+            self.ofdm_slot.resize(self.ofdm_out.len(), None);
+            for (k, rx) in self.ofdm_slice.iter_mut().enumerate() {
+                rx.process(block, &mut self.ofdm_out);
+                self.ofdm_slot.resize(self.ofdm_out.len(), Some(k));
+            }
         }
-        self.mfsk.process(samples, &mut self.mfsk_out);
         // Bursts heard: out of the thirds they covered (all, full-band).
         for (b, slot) in self.ofdm_out.iter().zip(&self.ofdm_slot) {
             self.meter.mask(b.start_sample, b.start_sample + ofdm_len(b), *slot);
@@ -484,6 +578,11 @@ impl Receivers {
     #[doc(hidden)]
     pub fn mfsk_stats(&self) -> phy_mfsk::debug::RxStats {
         self.mfsk.stats()
+    }
+
+    /// Cues heard so far.
+    pub fn cues_heard(&self) -> u64 {
+        self.cues_heard
     }
 
     pub fn busy(&self) -> bool {
@@ -569,6 +668,11 @@ impl AudioMedium {
         self.pep = on;
         self
     }
+
+    /// The receivers of side `k` (0 or 1).
+    pub fn receivers(&self, k: usize) -> &Receivers {
+        &self.receivers[k]
+    }
 }
 
 impl Medium for AudioMedium {
@@ -582,10 +686,13 @@ impl Medium for AudioMedium {
         if tx.is_empty() {
             return None;
         }
+        // S:N is the burst's own: a cue in front of it does not move the
+        // reference.
+        let body = &tx[if burst.cue { phy_mfsk::cue_samples(CUE_MODE) } else { 0 }..];
         let power = if self.pep {
             ion_dsp::TX_LEVEL * ion_dsp::TX_LEVEL / 2.0
         } else {
-            tx.iter().map(|x| x * x).sum::<f32>() / tx.len() as f32
+            body.iter().map(|x| x * x).sum::<f32>() / body.len() as f32
         };
         // Lead-in and tail of noise around the burst, and the channel delay.
         let lead = (0.1 * AUDIO_RATE) as usize;
@@ -608,7 +715,7 @@ impl Medium for AudioMedium {
                 // levelled on each modem's peaks (OFDM's air gain and level
                 // trim buy nothing here).
                 let p = match reference {
-                    ionos::Reference::Peak => ion_dsp::ionos::reference_power(&tx, ionos::Reference::Peak),
+                    ionos::Reference::Peak => ion_dsp::ionos::reference_power(body, ionos::Reference::Peak),
                     ionos::Reference::Mean => power,
                 };
                 ch[from].process(&input, Some((p, self.snr_db)), &mut out);
@@ -623,6 +730,52 @@ impl Medium for AudioMedium {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn data_burst(cue: bool) -> Outgoing {
+        let level = LADDER.iter().position(|l| l.wave == Wave::Ofdm(Guard::Normal)).unwrap();
+        Outgoing {
+            wave: LADDER[level].wave,
+            code: level,
+            user: super::super::station::user_bits(level, 0x5A, 2),
+            extra: 3,
+            frames: vec![vec![0x6B; LADDER[level].frame_bytes()]; 2],
+            spans: Vec::new(),
+            cue,
+        }
+    }
+
+    #[test]
+    fn a_cue_is_no_louder_than_mfsk_and_leaves_the_ofdm_as_it_was() {
+        let cue_len = phy_mfsk::cue_samples(CUE_MODE);
+        let peak = |a: &[f32]| a.iter().fold(0f32, |m, x| m.max(x.abs()));
+        let mfsk = phy_mfsk::modulate(CUE_MODE, 0x1234, 0x5678, &[], CENTER_HZ);
+        // At the most OFDM gain there is: the cue does not follow it.
+        for gain in [1.0, ofdm_gain(OFDM_AIR_GAIN_MAX_DB)] {
+            let plain = transmit_with(&data_burst(false), gain);
+            let cued = transmit_with(&data_burst(true), gain);
+            assert_eq!(cued.len(), cue_len + plain.len());
+            assert!(peak(&cued[..cue_len]) <= peak(&mfsk) * 1.0001);
+            assert!(peak(&cued[..cue_len]) <= ion_dsp::TX_LEVEL * 1.0001);
+            assert_eq!(&cued[cue_len..], &plain[..]);
+        }
+        let b = data_burst(true);
+        assert!((b.duration(&PhyAir) - data_burst(false).duration(&PhyAir) - cue_len as f64 / 48_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_cued_burst_is_heard_with_its_extra() {
+        let b = data_burst(true);
+        let mut audio = vec![0.0; 4_800];
+        audio.extend(transmit(&b));
+        audio.extend(vec![0.0; 48_000]);
+        let mut rx = Receivers::new();
+        let mut out = Vec::new();
+        rx.process(&audio, &mut out);
+        assert_eq!(rx.cues_heard(), 1);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!((out[0].code, out[0].user, out[0].extra), (b.code, b.user, 3));
+        assert!(decode_alone(&out[0]).iter().all(Option::is_some));
+    }
 
     #[test]
     fn bits_and_bytes_round_trip() {

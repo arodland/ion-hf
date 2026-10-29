@@ -24,6 +24,7 @@ impl Station {
                         compress,
                         class,
                         slot,
+                        caps,
                     },
                     Awaiting::ConnAck,
                 ) => {
@@ -32,6 +33,8 @@ impl Station {
                     self.state = State::Connected;
                     self.clear_wait();
                     self.agree(self.cfg.compress && compress);
+                    self.caps = self.own_caps() & caps;
+                    self.aim_db = Some(snr_db - self.air_db(FLOOR));
                     self.peer_class = class;
                     self.peer_slot = slot;
                     self.target = self.level_for(snr_db - self.air_db(FLOOR));
@@ -165,6 +168,11 @@ impl Station {
         let at = self.level;
         let keep = stored && self.cfg.harq && LADDER[at].frame == FrameSize::Long;
         self.at_peer.clear();
+        let rest = std::mem::take(&mut self.at_peer_rest);
+        if keep {
+            self.at_peer
+                .extend(rest.into_iter().filter(|(off, _)| self.inflight.contains_key(off)));
+        }
         self.peer_wave = LADDER[at].wave;
         let mut ok = Vec::with_capacity(self.last_burst.len());
         for (i, s) in self.last_burst.iter().enumerate() {
@@ -181,6 +189,31 @@ impl Station {
         ok
     }
 
+    /// Joins contiguous pieces in flight, up to `max` bytes, leaving those
+    /// the peer holds HARQ bits of (`held`) as they are. The receiver
+    /// places pieces by offset, so a join of pieces it already has part of
+    /// only overlaps.
+    fn merge_inflight(&mut self, held: &[u32], max: usize) {
+        let keys: Vec<u32> = self.inflight.keys().copied().collect();
+        let mut i = 0;
+        while i < keys.len() {
+            let k = keys[i];
+            let mut j = i + 1;
+            if !held.contains(&k) {
+                while let Some(&n) = keys.get(j) {
+                    let len = self.inflight[&k].len();
+                    if held.contains(&n) || k.wrapping_add(len as u32) != n || len + self.inflight[&n].len() > max {
+                        break;
+                    }
+                    let tail = self.inflight.remove(&n).unwrap();
+                    self.inflight.get_mut(&k).unwrap().extend(tail);
+                    j += 1;
+                }
+            }
+            i = j;
+        }
+    }
+
     pub(super) fn data_burst(&mut self) -> Outgoing {
         let level = self.level;
         let lv = LADDER[level];
@@ -192,10 +225,12 @@ impl Station {
             FrameSize::Short => TINY_ACK_FRAMES,
             FrameSize::Long => MAX_FRAMES,
         };
-        // HARQ increments for everything the peer holds go first: all of
-        // them or none (then those frames go out fresh again). Only in the
-        // waveform they were stored from: a change of guard means the
-        // echoes defeated the old one, and its LLRs are the suspect ones.
+        let cue = self.cue_for(level);
+        // HARQ increments for what the peer holds go first: all of them or
+        // none (then those frames go out fresh again), or behind a cue
+        // those that fit (`harq_partial`). Only in the waveform they were
+        // stored from: a change of guard means the echoes defeated the old
+        // one, and its LLRs are the suspect ones.
         let mut parity: Vec<(u32, usize, usize, usize)> = Vec::new(); // offset, held, start, bits
         if lv.frame == FrameSize::Long && lv.wave == self.peer_wave {
             parity.extend(
@@ -205,17 +240,47 @@ impl Station {
             );
         }
         let mut parity_bits: usize = parity.iter().map(|p| p.3).sum();
-        if parity.len() > cap || (!parity.is_empty() && self.air.duration(lv.wave, level, parity_bits) > max_s) {
-            parity.clear();
-            parity_bits = 0;
+        let too_big = |n: usize, bits: usize, s: f64| n > cap || (n > 0 && self.data_s(level, bits, cue) > s);
+        let mut rest = Vec::new();
+        if cue && self.cfg.harq_partial {
+            if too_big(parity.len(), parity_bits, max_s) {
+                while !parity.is_empty()
+                    && (parity.len() > harq::PARTIAL_MAX || too_big(parity.len(), parity_bits, max_s))
+                {
+                    parity_bits -= parity.pop().map_or(0, |p| p.3);
+                }
+                if !parity.is_empty() {
+                    rest = self.at_peer[parity.len()..].to_vec();
+                }
+            }
+        } else {
+            let parity_s = if self.cfg.harq_stretch {
+                max_s.max(self.cfg.max_burst_long_s)
+            } else {
+                max_s
+            };
+            if too_big(parity.len(), parity_bits, parity_s) {
+                parity.clear();
+                parity_bits = 0;
+            }
         }
         if parity.is_empty() {
             self.at_peer.clear();
         }
+        self.at_peer_rest = rest;
+        // Codewords the peer will hold when this burst arrives, before its
+        // fresh frames.
+        let stored = parity.len() + self.at_peer_rest.len();
+        let held: Vec<u32> = parity
+            .iter()
+            .map(|p| p.0)
+            .chain(self.at_peer_rest.iter().map(|r| r.0))
+            .collect();
         let mut room = 0;
         let max_bits = self.air.max_bits(lv.wave, level);
         while parity.len() + room < cap
-            && self.air.duration(lv.wave, level, parity_bits + (room + 1) * slot) <= max_s
+            && stored + room < harq::MAX_SLOTS
+            && self.data_s(level, parity_bits + (room + 1) * slot, cue) <= max_s
             && parity_bits + (room + 1) * slot <= max_bits
         {
             room += 1;
@@ -236,11 +301,14 @@ impl Station {
                 self.inflight.insert(k + (i * max_payload) as u32, chunk.to_vec());
             }
         }
+        if self.cfg.merge_pieces && lv.frame == FrameSize::Long {
+            self.merge_inflight(&held, max_payload);
+        }
         let mut pieces: Vec<u32> = self
             .inflight
             .keys()
             .copied()
-            .filter(|k| !parity.iter().any(|p| p.0 == *k))
+            .filter(|k| !held.contains(k))
             .take(room)
             .collect();
         let resent = pieces.len();
@@ -275,6 +343,7 @@ impl Station {
             spans.push((from, bits));
         }
         self.stats.data_bursts += 1;
+        self.stats.cued_bursts += cue as u32;
         self.stats.frames_sent += pieces.len() as u32;
         self.stats.frames_resent += resent as u32;
         self.stats.increments_sent += parity.len() as u32;
@@ -284,21 +353,23 @@ impl Station {
         self.awaiting = Awaiting::Ack;
         self.tries = 0;
         self.deadline = None;
-        let hq = harq::check_bits(parity.len());
+        let field = harq::partial_field(parity.len(), stored);
+        let hq = harq::burst_check_bits(stored, field);
         // A slice burst goes in the peer's third (`audio::transmit` reads
-        // it from `extra`, which a data burst does not otherwise use).
-        let slot = if self.cfg.slice_slots && lv.wave == Wave::Ofdm(Guard::Slice) {
-            self.peer_slot
+        // it from `extra`); a cued burst's cue carries the parity field.
+        let extra = if self.cfg.slice_slots && lv.wave == Wave::Ofdm(Guard::Slice) {
+            self.peer_slot as u16
         } else {
-            0
+            field
         };
         Outgoing {
             wave: lv.wave,
             code: level,
             user: user_bits(level, self.session, self.burst_id | hq << 2),
-            extra: slot as u16,
+            extra,
             frames,
             spans,
+            cue,
         }
     }
 }

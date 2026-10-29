@@ -156,6 +156,7 @@ pub fn sequence_with(call: &str, ofdm_db: f32) -> (Vec<f32>, Vec<Sent>) {
     ];
     for w in waves {
         let b = Outgoing {
+            cue: false,
             wave: w,
             code: TINY,
             user: user_bits(TINY, SESSION, 1),
@@ -184,6 +185,7 @@ pub fn sequence_with(call: &str, ofdm_db: f32) -> (Vec<f32>, Vec<Sent>) {
                 })
                 .collect();
             let b = Outgoing {
+                cue: false,
                 wave: lv.wave,
                 code: level,
                 user: user_bits(level, SESSION, 0),

@@ -30,7 +30,7 @@ mod tx;
 use frame::*;
 
 pub use frame::{DataMode, GAIN_STEP_DB, Pilots};
-pub use rx::{CellDebug, Genie, PhyRx, RxBurst, RxStats};
+pub use rx::{CellDebug, Cue, Genie, PhyRx, RxBurst, RxStats};
 pub use tx::{
     DEFAULT_CLIP_DB, LOW_PAPR_HDR_CLIP_DB, PSK8_CLIP_DB, QAM16_CLIP_DB, QAM64_CLIP_DB, QPSK_CLIP_DB, TxOptions,
     debug_tx_cells, low_papr_clip_db, low_papr_gain_db, modulate, modulate_full, modulate_with,

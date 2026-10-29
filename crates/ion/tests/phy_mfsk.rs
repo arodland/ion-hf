@@ -1173,6 +1173,7 @@ fn diag_bicm_id() {
                     start_sample: 0,
                     clock_ppm: 0.0,
                     chan: Default::default(),
+                    cue: false,
                 };
                 b.llrs = demap(&b, &vec![0.0; bits.len()]);
                 let n = fec::n_short();

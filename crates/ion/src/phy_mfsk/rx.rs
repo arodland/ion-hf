@@ -140,7 +140,7 @@ struct Cand {
     e: [Vec<Energies>; 3],
     /// Energies of the R1 header symbols received so far, per R1 window.
     e1: [Vec<Energies>; 3],
-    tried: [bool; 4],
+    tried: [bool; super::frame::HYPS.len()],
     /// Inside the expected slot.
     slot: bool,
 }
@@ -164,6 +164,7 @@ struct Known {
 /// A burst whose header has decoded.
 struct Active {
     mode: MfskMode,
+    cue: bool,
     /// Symbol-mapped data (`modulate_symbols`).
     symbols: bool,
     user: u16,

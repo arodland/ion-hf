@@ -37,7 +37,8 @@ pub struct RxBurst {
     pub start_sample: u64,
     /// The receiver's (and so the burst's) numerology.
     pub numerology: Numerology,
-    /// The 16 extra bits of a header-only burst; 0 otherwise.
+    /// The 16 extra bits of a header-only burst, or those of the cue of a
+    /// cued burst ([`PhyRx::cue`]); 0 otherwise.
     pub extra: u16,
     /// True for a header-only burst (no data symbols, `llrs` empty).
     pub header_only: bool,
@@ -66,6 +67,10 @@ pub struct RxStats {
     pub header_ok: u64,
     pub header_fail: u64,
     pub bursts: u64,
+    /// Cues taken, and cued bursts whose preamble check failed (taken
+    /// anyway when the cue is trusted).
+    pub cues: u64,
+    pub cue_sync_fail: u64,
 }
 
 /// Ring buffer of baseband samples (2.05 s).
@@ -159,6 +164,12 @@ pub struct PhyRx {
     mbuf: Vec<f32>,
     slot_llr: Vec<f32>,
     genie: Option<Genie>,
+    cue: Option<Cue>,
+    /// Detector-peak position the cue stands for.
+    cue_n_pk: u64,
+    /// The burst under way was taken on its cue alone (its preamble
+    /// check failed): its delay and Doppler measurements are not reported.
+    weak_sync: bool,
     stats: RxStats,
     debug: Option<Vec<CellDebug>>,
     rho_log: Option<Vec<f32>>,
@@ -179,6 +190,32 @@ pub struct Genie {
     pub start: u64,
     pub pilots: Pilots,
 }
+
+/// A burst announced by another receiver: the OFDM part of a composite
+/// burst, whose MFSK header ([`crate::phy_mfsk::modulate_cue`]) gives its
+/// start, its carrier offset and what its own header would.
+#[derive(Clone, Copy, Debug)]
+pub struct Cue {
+    /// Audio sample (as [`RxBurst::start_sample`] counts) where the burst
+    /// starts.
+    pub start: u64,
+    /// Carrier offset measured on the cue, Hz.
+    pub f_hz: f32,
+    pub constellation: Constellation,
+    pub data_symbols: usize,
+    pub user: u16,
+    /// Handed out in [`RxBurst::extra`].
+    pub extra: u16,
+    pub pilots: Pilots,
+    pub mode: DataMode,
+    /// Take the burst whatever its preamble correlation: the cue's own
+    /// CRC already vouched for it.
+    pub trust: bool,
+}
+
+/// How far a burst may start from its cue and still be the cued one,
+/// baseband samples (5 ms).
+const CUE_TOL: u64 = (FS * 0.005) as u64;
 
 /// Per data cell of the last burst (debug hook).
 #[doc(hidden)]
@@ -278,6 +315,9 @@ impl PhyRx {
             mbuf: vec![0.0; cells],
             slot_llr: vec![0.0; cells * BPS_MAX],
             genie: None,
+            cue: None,
+            cue_n_pk: 0,
+            weak_sync: false,
             stats: RxStats::default(),
             debug: None,
             rho_log: None,
@@ -331,6 +371,37 @@ impl PhyRx {
     #[doc(hidden)]
     pub fn stats(&self) -> RxStats {
         self.stats
+    }
+
+    /// A burst announced by another receiver ([`Cue`]): detection is
+    /// skipped, and the header is taken from the cue (when the burst is
+    /// already being received, from the cue as well unless its own header
+    /// has decoded). The burst comes out of [`PhyRx::process`] as usual.
+    pub fn cue(&mut self, c: Cue) {
+        let l = self.l;
+        // Inverse of `start_sample`.
+        let gd = (l.filter_len - 1) as i64 + self.blanker.delay() as i64;
+        let a_start = (c.start as i64 + gd - (DEC as i64 - 1)).div_euclid(DEC as i64);
+        let n_pk = (a_start + l.sc_peak_to_a()).max(0) as u64;
+        self.stats.cues += 1;
+        self.cue = Some(c);
+        self.cue_n_pk = n_pk;
+        let same = self.phase != Phase::Idle && self.cur.n_pk.abs_diff(n_pk) <= CUE_TOL;
+        let header_failed = self.phase == Phase::Collect && self.hdr.is_none() && self.g_next >= l.pre_syms();
+        if same && !header_failed {
+            return;
+        }
+        self.cands.push_front(Cand {
+            n_pk,
+            f1: c.f_hz as f64,
+        });
+        self.phase = Phase::Idle;
+        self.need = self.written;
+    }
+
+    /// The candidate being synchronised is the cued burst.
+    fn cued(&self) -> Option<Cue> {
+        self.cue.filter(|_| self.cur.n_pk.abs_diff(self.cue_n_pk) <= CUE_TOL)
     }
 
     /// Debug hook: keep per-cell data of the last burst.
@@ -664,7 +735,14 @@ impl PhyRx {
                 best = d;
             }
         }
-        if self.rho[best] < l.rho_min {
+        let cued = self.cued().is_some();
+        let trusted = self.cued().is_some_and(|q| q.trust);
+        let weak_b = self.rho[best] < l.rho_min;
+        self.weak_sync = false;
+        if weak_b && !trusted {
+            if cued {
+                self.stats.cue_sync_fail += 1;
+            }
             return false;
         }
         // Energy window: middle of the plateau of windows that capture
@@ -777,9 +855,14 @@ impl PhyRx {
         if let Some(lg) = self.rho_log.as_mut() {
             lg.push(rho_full);
         }
-        if rho_full < l.rho_full_min {
+        let weak = weak_b || rho_full < l.rho_full_min;
+        if weak && cued {
+            self.stats.cue_sync_fail += 1;
+        }
+        if weak && !trusted {
             return false;
         }
+        self.weak_sync = weak;
 
         // Noise per bin from A's empty carriers: at least four windows
         // spanning the clean part of A, more (half-overlapping) when A is
@@ -856,6 +939,17 @@ impl PhyRx {
         let nc = l.nc;
         // Grid symbols up to the end of the last header copy.
         let ng = l.pre_syms() + (copies - 1) * l.hdr_syms;
+        if let Some(q) = self.cued() {
+            self.cue = None;
+            return Some(Header {
+                constellation: q.constellation.code(),
+                nsym: q.data_symbols as u16,
+                user: q.user,
+                extra: q.extra,
+                sparse: q.pilots == Pilots::Sparse,
+                mode: q.mode,
+            });
+        }
         if let Some(gn) = self.genie {
             let start = self.start_sample() as i64;
             if (start - gn.start as i64).abs() > (AUDIO_RATE * 0.005) as i64 {

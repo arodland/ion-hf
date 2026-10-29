@@ -36,9 +36,11 @@ here S:N is the power of a sine at each burst's own peak over the noise in
 3000 Hz (`ion_dsp::ionos::Reference::Peak`), and the bursts are the ones
 sent on the air (`AudioMedium::ionos` in `crates/ion/src/link/audio.rs`).
 Against the mean-power SNR in 2.4 kHz that the other documents use, this
-scale is harder by the burst's envelope PAPR less 3 dB, plus 1 dB of
-bandwidth: about 1 dB for MFSK, 2 dB for the low-PAPR QPSK levels, 4 dB
-for 16QAM and 6.5 dB for 64QAM (PAPR in [phy.md](phy.md)).
+scale is harder by the burst's peak over a sine at that peak (its envelope
+PAPR less 3 dB) and easier by the 1 dB more noise of 3000 Hz: about −1 dB
+for MFSK, 2.7 dB for the low-PAPR QPSK levels, 5.3 dB for 16QAM and 7.5 dB
+for 64QAM as `reference_power` measures the bursts sent (PAPR in
+[phy.md](phy.md)).
 `ION_IONOS_REF=mean` measures against each burst's mean power instead.
 
 **Checks** (`cargo test -p ion-dsp --release ionos`): the Gaussian

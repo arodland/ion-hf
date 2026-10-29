@@ -80,6 +80,7 @@ impl App {
         let cmds = &threads.ion.cmds;
         let _ = cmds.send(IonCmd::SetCall(cfg.call.clone()));
         let _ = cmds.send(IonCmd::SetOfdmDb(cfg.ofdm_db));
+        let _ = cmds.send(IonCmd::SetGear(cfg.gear.link()));
         if loopback && let Some(lb) = threads.radio.ctl.loopback() {
             // The simulated station "LOOP" answers calls and echoes text.
             let _ = lb.send(LoopCmd::IonPeer(true));

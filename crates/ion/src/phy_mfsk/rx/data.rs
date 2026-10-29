@@ -215,6 +215,7 @@ impl MfskRx {
             start_sample: b.start_sample,
             clock_ppm: (b.drift / fmt.sym as f64 * 1e6) as f32,
             chan,
+            cue: b.cue,
         });
         true
     }

@@ -1,7 +1,8 @@
 //! Gear shifting: the sending side's choice of level and burst length
 //! from the peer's ACKs.
 
-use super::{Sent, Station, TINY, frame_bits};
+use super::config::Gear;
+use super::{Sent, Station, TINY, caps, cue_s, frame_bits};
 use crate::fec;
 use crate::level::{FLOOR, FrameSize, Guard, LADDER, Wave};
 
@@ -11,6 +12,18 @@ const CHANNEL_FAIL_DB: f32 = 4.0;
 
 /// Weight of the newest burst in a level's success rate.
 const SUCCESS_WEIGHT: f32 = 0.3;
+
+/// [`Gear::Goodput`]: a level's observed success fades back to the
+/// report's prediction with this time constant, s.
+const GOODPUT_MEMORY_S: f64 = 180.0;
+
+/// [`Gear::Goodput`]: a level change must promise this much more
+/// throughput.
+const GOODPUT_SWITCH: f64 = 1.15;
+
+/// [`Gear::Goodput`]: levels whose threshold is more than this far above
+/// the report are not tried, dB.
+const GOODPUT_REACH_DB: f32 = 2.0;
 
 /// Echo a waveform takes in its stride, ms (MFSK: its long symbols; only
 /// OFDM channel failures compare guards).
@@ -25,6 +38,7 @@ fn guard_ms(w: Wave) -> f32 {
 impl Station {
     pub(super) fn on_ack(&mut self, burst: u8, bitmap: u64, stored: bool, snr_db: f32, now: f64) {
         let aim = self.aim_snr(snr_db - self.air_db(self.level));
+        self.aim_db = Some(aim);
         self.target = self.level_for(aim);
         if self.last_burst.is_empty() {
             return; // an Idle check-in
@@ -64,6 +78,25 @@ impl Station {
             None => ok,
         };
         self.success[at] = Some(success);
+        self.success_at[at] = now;
+        if self.cfg.gear == Gear::Goodput {
+            if loss > 0.99 {
+                self.fails[at] = self.fails[at].saturating_add(1);
+                self.stats.failed_bursts += 1;
+                if matches!(LADDER[at].wave, Wave::Ofdm(_)) {
+                    self.stats.failed_ofdm += 1;
+                    if snr_db >= self.threshold(at) + CHANNEL_FAIL_DB {
+                        self.channel_failed(at, now);
+                    }
+                }
+            } else if loss == 0.0 {
+                self.fails[at] = 0;
+            }
+            self.level = self.pick_by_goodput(aim, now);
+            self.adapt_burst(at, loss, snr_db);
+            self.last_burst.clear();
+            return;
+        }
         if loss > 0.3 && self.worth_keeping(at, success, now) {
             // Lost in a fade, but this level still beats the next one down:
             // stay (HARQ completes what was missed), no hold.
@@ -138,6 +171,67 @@ impl Station {
         self.last_burst.clear();
     }
 
+    /// [`Gear::Goodput`]: the level expected to move the most. A level's
+    /// chance is a logistic in its distance from its threshold (0.88 at
+    /// the threshold, where it loses 10% of frames, 0.12 a dB below: the
+    /// codes' waterfall is that steep), blended with its observed success
+    /// while that is recent.
+    fn pick_by_goodput(&self, aim: f32, now: f64) -> usize {
+        let top = self.cfg.max_level.min(LADDER.len() - 1);
+        let score = |l: usize| {
+            let room = aim + self.air_db(l) - self.threshold(l) - self.margin();
+            let prior = 1.0 / (1.0 + (-(room + 0.5) / 0.25).exp());
+            // Each further whole-burst loss doubles how long it is remembered.
+            let memory = GOODPUT_MEMORY_S * 2f64.powi(self.fails[l].min(4) as i32);
+            let w = (-(now - self.success_at[l]) / memory).exp() as f32;
+            let p = match self.success[l] {
+                Some(s) => w * s + (1.0 - w) * prior,
+                None => prior,
+            };
+            p as f64 * self.level_rate(l)
+        };
+        let at = self.level;
+        // A change must pay for itself: more so across frame sizes, which
+        // re-cut what is in flight.
+        let worth = |l: usize| {
+            let bar = if l == at {
+                1.0
+            } else if LADDER[l].frame == LADDER[at].frame {
+                GOODPUT_SWITCH
+            } else {
+                GOODPUT_SWITCH * GOODPUT_SWITCH
+            };
+            score(l) / bar
+        };
+        (FLOOR..=top)
+            .filter(|&l| {
+                l == at
+                    || self.family_ok(l) && aim + self.air_db(l) >= self.threshold(l) + self.margin() - GOODPUT_REACH_DB
+            })
+            .max_by(|&a, &b| worth(a).total_cmp(&worth(b)))
+            .map_or(FLOOR, |l| self.usable_below(l, f64::INFINITY))
+    }
+
+    /// [`Gear::Goodput`]: a whole burst at OFDM level `at` lost with SNR to
+    /// spare. The channel broke the waveform (fast fading, an echo past
+    /// the guard), so it counts as a lost burst at the other levels it
+    /// breaks too: those in the same waveform, and the faster ones whose
+    /// guard is no longer. Otherwise each would be found out by a burst
+    /// of its own, and again each time its record fades.
+    fn channel_failed(&mut self, at: usize, now: f64) {
+        for (k, lv) in LADDER.iter().enumerate() {
+            let w = lv.wave;
+            let hit = matches!(w, Wave::Ofdm(_))
+                && k != at
+                && (w == LADDER[at].wave || k > at && guard_ms(w) <= guard_ms(LADDER[at].wave));
+            if hit {
+                self.success[k] = Some(self.success[k].map_or(0.0, |p| p * (1.0 - SUCCESS_WEIGHT)));
+                self.success_at[k] = now;
+                self.fails[k] = self.fails[k].saturating_add(1);
+            }
+        }
+    }
+
     /// The SNR to aim by: the report, or with `smooth_target` the lower of
     /// it and the median of the last three reports.
     fn aim_snr(&mut self, snr_db: f32) -> f32 {
@@ -157,13 +251,14 @@ impl Station {
     /// `max_burst_s`: what a level is worth.
     fn level_rate(&self, l: usize) -> f64 {
         let lv = &LADDER[l];
+        let cue = self.cue_for(l);
         // A frame's air time, and the burst's fixed part (an MFSK burst
         // of one bit already sends a whole codeword).
-        let one = self.air.duration(lv.wave, l, frame_bits(l, 1));
-        let frame = self.air.duration(lv.wave, l, frame_bits(l, 2)) - one;
+        let one = self.data_s(l, frame_bits(l, 1), cue);
+        let frame = self.data_s(l, frame_bits(l, 2), cue) - one;
         let fixed = one - frame;
         let frames = ((self.cfg.max_burst_s - fixed) / frame.max(1e-3)).floor().max(1.0);
-        let burst = self.air.duration(lv.wave, l, frame_bits(l, frames as usize));
+        let burst = self.data_s(l, frame_bits(l, frames as usize), cue);
         frames * (lv.frame_bytes() * 8) as f64 / burst.max(1e-3)
     }
 
@@ -195,6 +290,9 @@ impl Station {
 
     /// The highest usable level at or below `l` (the floor if none is).
     pub(super) fn usable_below(&self, l: usize, now: f64) -> usize {
+        if let Some(p) = self.cfg.pin_level {
+            return p;
+        }
         (FLOOR..=l).rev().find(|&k| self.usable(k, now)).unwrap_or(FLOOR)
     }
 
@@ -215,6 +313,23 @@ impl Station {
             .take(n)
             .last()
             .unwrap_or(at)
+    }
+
+    /// Whether a data burst at level `l` goes behind a cue: a full-band
+    /// OFDM level, on a link that agreed to cues, while the SNR aimed by is
+    /// below `cue_below_db` (where the OFDM header starts to miss bursts;
+    /// above it the cue only costs air time).
+    pub(super) fn cue_for(&self, l: usize) -> bool {
+        self.caps & caps::CUE != 0
+            && matches!(LADDER[l].wave, Wave::Ofdm(Guard::Normal | Guard::Long))
+            && self.aim_db.is_none_or(|a| a < self.cfg.cue_below_db)
+    }
+
+    /// Seconds of a data burst at level `l` of `bits` coded bits, behind
+    /// a cue or not.
+    pub(super) fn data_s(&self, l: usize, bits: usize, cue: bool) -> f64 {
+        let c = if cue { cue_s() } else { 0.0 };
+        self.air.duration(LADDER[l].wave, l, bits) + c
     }
 
     /// Mean power of level `l` on the air against the carrier, dB, as
@@ -262,6 +377,14 @@ impl Station {
         }
     }
 
+    fn margin(&self) -> f32 {
+        if self.cfg.eff_snr {
+            self.cfg.eff_margin_db
+        } else {
+            self.cfg.margin_db
+        }
+    }
+
     /// Gear-shift threshold of level `l` in the SNR the ACKs carry.
     fn threshold(&self, l: usize) -> f32 {
         if self.cfg.eff_snr {
@@ -303,7 +426,7 @@ impl Station {
     /// the long-guard levels up.
     pub fn clean_burst_s(&self, level: usize) -> f64 {
         let w = LADDER[level].wave;
-        let pre = self.air.duration(w, level, 1);
+        let pre = self.data_s(level, 1, self.cue_for(level));
         let ack = self.air.duration(w, TINY, 0);
         let turn = 2.0 * self.cfg.turnaround_s;
         let lo = self.cfg.max_burst_s;

@@ -8,7 +8,9 @@
 //! bits of that codeword the receiver already holds and `n` is the
 //! level's frame length. Nothing in the burst names them: both sides
 //! derive the layout from the stored set, and the burst's check bits
-//! ([`check_bits`]) catch a disagreement.
+//! ([`burst_check_bits`]) catch a disagreement. A burst behind an MFSK cue
+//! may continue only the first `P` stored codewords and name `P` in the
+//! cue ([`partial_field`]); the rest stay stored, ahead of its failures.
 
 use super::audio::bits_to_bytes;
 use crate::fec::{self, Decoder, Rate};
@@ -40,10 +42,33 @@ pub fn start(h: usize) -> usize {
     h % fec::N_MOTHER
 }
 
+/// Most parity slots a burst names explicitly
+/// ([`crate::link::Config::harq_partial`]). The field is 6 bits: 0 means
+/// "the whole stored set", `p + 1` the first `p` stored codewords.
+pub const PARTIAL_MAX: usize = 62;
+
+/// The explicit parity field of a burst carrying increments for the first
+/// `parity` of `stored` codewords (0: all of them).
+pub fn partial_field(parity: usize, stored: usize) -> u16 {
+    if parity >= stored {
+        0
+    } else {
+        parity.min(PARTIAL_MAX) as u16 + 1
+    }
+}
+
 /// Check bits (`user` bits 14–15) of a data burst with `parity` parity
 /// slots: 0 for none, else `1 + parity mod 3`.
 pub fn check_bits(parity: usize) -> u8 {
     if parity == 0 { 0 } else { 1 + (parity % 3) as u8 }
+}
+
+/// Check bits of a burst sent against `stored` codewords with parity
+/// field `field`. A partial burst counts one more: a receiver that missed
+/// the cue, and so the field, finds them wrong and keeps nothing rather
+/// than misreading the layout.
+pub fn burst_check_bits(stored: usize, field: u16) -> u8 {
+    check_bits(stored + usize::from(field > 0))
 }
 
 /// Soft content of one long-frame data burst.
@@ -158,6 +183,14 @@ impl HarqRx {
     /// One long-frame data burst at ladder `level` with check bits `hq`.
     /// Replaces the stored set with this burst's failures.
     pub fn receive(&mut self, level: usize, hq: u8, soft: &Soft) -> Received {
+        self.receive_partial(level, hq, 0, soft)
+    }
+
+    /// [`HarqRx::receive`] with an explicit parity field ([`partial_field`]):
+    /// when it names `p` slots, only the first `p` stored codewords are
+    /// continued; the others stay stored, ahead of this burst's failures
+    /// (so the longest waiting go first next time).
+    pub fn receive_partial(&mut self, level: usize, hq: u8, field: u16, soft: &Soft) -> Received {
         let lv = LADDER[level];
         assert_eq!(lv.frame, FrameSize::Long, "HARQ is for long frames");
         let slot = lv.coded_bits();
@@ -171,7 +204,7 @@ impl HarqRx {
                 self.recycle(e.acc);
             }
             Vec::new()
-        } else if check_bits(old.len()) != hq {
+        } else if burst_check_bits(old.len(), field) != hq {
             // We do not know which slots are parity: keep nothing.
             for e in old {
                 self.recycle(e.acc);
@@ -181,20 +214,35 @@ impl HarqRx {
         } else {
             old
         };
+        let total = old.len();
+        let mut old = old;
+        // A field naming none, or more than is stored (nothing, say): the
+        // layout is not ours.
+        if field > 0 {
+            let p = field as usize - 1;
+            if p == 0 || p > old.len() {
+                for e in old {
+                    self.recycle(e.acc);
+                }
+                out.stored = false;
+                return out;
+            }
+            self.entries.extend(old.split_off(p));
+        }
         let spans: Vec<(usize, usize)> = old.iter().map(|e| (start(e.h), increment(e.h, slot))).collect();
         let parity_bits: usize = spans.iter().map(|s| s.1).sum();
         out.parity = old.len();
         match soft {
             Soft::Llrs(llrs) => {
                 if llrs.len() < parity_bits {
-                    for e in old {
+                    for e in old.into_iter().chain(std::mem::take(&mut self.entries)) {
                         self.recycle(e.acc);
                     }
                     out.stored = false;
                     out.parity = 0;
                     return out;
                 }
-                let fresh = ((llrs.len() - parity_bits) / slot).min(MAX_SLOTS - old.len());
+                let fresh = ((llrs.len() - parity_bits) / slot).min(MAX_SLOTS - total);
                 let mut pos = 0;
                 for (mut e, (from, bits)) in old.into_iter().zip(spans) {
                     add(&mut e.acc, from, &llrs[pos..pos + bits]);
@@ -212,7 +260,7 @@ impl HarqRx {
             }
             Soft::Model(slots) => {
                 if slots.len() < old.len() {
-                    for e in old {
+                    for e in old.into_iter().chain(std::mem::take(&mut self.entries)) {
                         self.recycle(e.acc);
                     }
                     out.stored = false;
@@ -228,7 +276,7 @@ impl HarqRx {
                     e.h += bits;
                     self.settle(e, bits, true, &mut out);
                 }
-                for s in slots[p..].iter().take(MAX_SLOTS - p) {
+                for s in slots[p..].iter().take(MAX_SLOTS - total) {
                     let mut e = self.entry(Some(s.info.clone()));
                     if (s.from, s.bits) == (0, slot) {
                         add_const(&mut e.acc, 0, slot, s.gamma);
@@ -301,5 +349,66 @@ mod tests {
         assert_eq!(check_bits(0), 0);
         assert_eq!(check_bits(3), 1);
         assert_eq!(check_bits(5), 3);
+    }
+
+    #[test]
+    fn a_partial_burst_continues_the_first_stored_and_keeps_the_rest() {
+        let level = LADDER.iter().position(|l| l.frame == FrameSize::Long).unwrap();
+        let slot = LADDER[level].coded_bits();
+        let lost = |k: u8, from: usize, bits: usize| ModelSlot {
+            info: vec![k; 4],
+            from,
+            bits,
+            gamma: 0.0,
+        };
+        let mut rx = HarqRx::new();
+        rx.receive(
+            level,
+            0,
+            &Soft::Model(vec![lost(1, 0, slot), lost(2, 0, slot), lost(3, 0, slot)]),
+        );
+        assert_eq!(rx.held(), vec![slot; 3]);
+        let inc = increment(slot, slot);
+        // Missing the field (no cue), the receiver keeps nothing.
+        let mut missed = HarqRx::new();
+        missed.receive(
+            level,
+            0,
+            &Soft::Model(vec![lost(1, 0, slot), lost(2, 0, slot), lost(3, 0, slot)]),
+        );
+        let r = missed.receive(
+            level,
+            burst_check_bits(3, partial_field(1, 3)),
+            &Soft::Model(vec![lost(1, start(slot), inc), lost(4, 0, slot)]),
+        );
+        assert!(!r.stored && missed.is_empty());
+        let r = rx.receive_partial(
+            level,
+            burst_check_bits(3, partial_field(1, 3)),
+            partial_field(1, 3),
+            &Soft::Model(vec![lost(1, start(slot), inc), lost(4, 0, slot)]),
+        );
+        assert!(r.stored);
+        assert_eq!(r.parity, 1);
+        // The two left out first, then the burst's failures in order.
+        assert_eq!(rx.held(), vec![slot, slot, slot + inc, slot]);
+        // A field naming more than is stored: nothing is kept.
+        let r = rx.receive_partial(
+            level,
+            burst_check_bits(4, partial_field(5, 9)),
+            partial_field(5, 9),
+            &Soft::Model(vec![lost(5, 0, slot)]),
+        );
+        assert!(!r.stored && rx.is_empty());
+        assert_eq!(partial_field(4, 4), 0);
+        // Against an empty store, a partial burst of a sender that counts
+        // three stored has matching check bits but is still refused.
+        let r = rx.receive_partial(
+            level,
+            burst_check_bits(3, partial_field(1, 3)),
+            partial_field(1, 3),
+            &Soft::Model(vec![lost(1, start(slot), inc), lost(6, 0, slot)]),
+        );
+        assert!(!r.stored && rx.is_empty());
     }
 }

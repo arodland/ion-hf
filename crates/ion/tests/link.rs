@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ion::level::{Guard, LADDER, Wave};
 use ion::link::sim::{ModelAir, ModelMedium, Sim};
-use ion::link::{Air, Config, Role, State, Station};
+use ion::link::{Air, Config, Gear, Role, State, Station};
 
 fn pair(snr_db: f32, seed: u64, medium: impl FnOnce(&mut ModelMedium)) -> Sim {
     pair_with(snr_db, seed, true, medium)
@@ -142,12 +142,16 @@ fn pair_tuned(snr_db: f32, seed: u64, tune: impl Fn(&mut Config), medium: impl F
 
 #[test]
 fn bursts_grow_on_a_steady_floor_and_it_pays() {
-    // −9.5 dB, steady: the SNR report allows only MFSK R0 (R1 wants
-    // −8.5), which loses next to nothing. Its 8 s bursts hold one 22-byte
-    // frame; on a clean run they grow to several.
+    // −9.5 dB, steady: the ladder's SNR target allows only MFSK R0 (R1
+    // wants −8.5), which loses next to nothing. Its 8 s bursts hold one
+    // 22-byte frame; on a clean run they grow to several.
     let n = 600;
     let run = |adapt: bool| {
-        let mut sim = pair_tuned(-9.5, 21, |c| c.burst_adapt = adapt, |_| {});
+        let tune = |c: &mut Config| {
+            c.burst_adapt = adapt;
+            c.gear = Gear::Ladder;
+        };
+        let mut sim = pair_tuned(-9.5, 21, tune, |_| {});
         let secs = transfer(&mut sim, n, 3_600.0);
         let most = sim
             .log
@@ -296,13 +300,13 @@ fn low_snr_still_delivers_at_the_bottom_level() {
     let mut sim = pair(1.5, 2, |_| {});
     transfer(&mut sim, 5_000, 900.0);
     let levels = &sim.stations[0].stats().levels;
-    // 1.5 dB allows the MFSK floor, the slice levels and the long-guard
-    // levels (the gear shifter may try the second and come back down).
-    let long = ion::level::LADDER
-        .iter()
-        .rposition(|l| l.wave == ion::level::Wave::Ofdm(ion::level::Guard::Long))
-        .unwrap();
-    assert!(levels.iter().all(|&l| l <= long), "{levels:?}");
+    // Nothing whose threshold is more than 2 dB above 1.5 dB, as far as
+    // the gear shift reaches past the report.
+    let reach = 1.5 + 2.0;
+    assert!(
+        levels.iter().all(|&l| ion::level::EFF_THRESHOLDS_DB[l] <= reach),
+        "{levels:?}"
+    );
 }
 
 #[test]

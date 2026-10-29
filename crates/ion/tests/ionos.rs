@@ -18,14 +18,21 @@
 //! (without `Config::smooth_target` / `hold_by_goodput`),
 //! `ION_POWER=1` (with `Config::power_aware`), `ION_START=floor`
 //! (the first data burst at the floor, `Config::start_margin_db`),
-//! `ION_TRACE=1` (every data burst's level).
+//! `ION_TRACE=1` (every data burst's level), `ION_PIN=L` (every data
+//! burst at level L, `Config::pin_level`), `ION_GEAR=ladder`
+//! (`Gear::Ladder`), `ION_MERGE=0` / `ION_STRETCH=0` (without
+//! `Config::merge_pieces` / `harq_stretch`), `ION_CUE=0` (without
+//! `Config::cue`), `ION_CUE_DB=X` (`Config::cue_below_db`; `inf`: every
+//! full-band burst), `ION_PARTIAL=0` (without `harq_partial`), `ION_FAIL_HOLD`,
+//! `ION_FAIL_HOLD_MAX`, `ION_LOSS_HOLD`, `ION_EFF_MARGIN` (those
+//! settings).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ion::link::audio::{self, AudioMedium, PhyAir};
 use ion::link::sim::{Airtime, Sim};
-use ion::link::{Air, Station};
+use ion::link::{Air, Gear, Station};
 use ion_dsp::ionos::{Mode, Reference};
 
 fn env<T: std::str::FromStr>(k: &str) -> Option<T> {
@@ -62,6 +69,37 @@ fn session(mode: Mode, paths: usize, reference: Reference, snr_db: f32, secs: f6
         if std::env::var("ION_START").is_ok_and(|v| v == "floor") {
             c.start_margin_db = None;
         }
+        c.pin_level = env("ION_PIN");
+        if std::env::var("ION_GEAR").is_ok_and(|v| v == "ladder") {
+            c.gear = Gear::Ladder;
+        }
+        if std::env::var("ION_MERGE").is_ok_and(|v| v == "0") {
+            c.merge_pieces = false;
+        }
+        if std::env::var("ION_STRETCH").is_ok_and(|v| v == "0") {
+            c.harq_stretch = false;
+        }
+        if std::env::var("ION_CUE").is_ok_and(|v| v == "0") {
+            c.cue = false;
+        }
+        if let Some(v) = env("ION_CUE_DB") {
+            c.cue_below_db = v;
+        }
+        if std::env::var("ION_PARTIAL").is_ok_and(|v| v == "0") {
+            c.harq_partial = false;
+        }
+        if let Some(v) = env("ION_FAIL_HOLD") {
+            c.fail_hold_s = v;
+        }
+        if let Some(v) = env("ION_FAIL_HOLD_MAX") {
+            c.fail_hold_max_s = v;
+        }
+        if let Some(v) = env("ION_LOSS_HOLD") {
+            c.loss_hold_s = v;
+        }
+        if let Some(v) = env("ION_EFF_MARGIN") {
+            c.eff_margin_db = v;
+        }
         c
     };
     let a = Station::new(cfg("N0JLF"), air.clone());
@@ -94,6 +132,19 @@ fn session(mode: Mode, paths: usize, reference: Reference, snr_db: f32, secs: f6
             })
             .collect();
         eprintln!("{} {snr_db:+} dB seed {seed}: {}", mode.name(), line.join(", "));
+        let rx = sim.stations[1].stats();
+        eprintln!(
+            "  bursts {} cued {} frames {} resent {} increments {} ({} bits) | rx codewords failed {} harq recovered {} bytes {}",
+            st.data_bursts,
+            st.cued_bursts,
+            st.frames_sent,
+            st.frames_resent,
+            st.increments_sent,
+            st.increment_bits,
+            rx.codewords_failed,
+            rx.harq_recovered,
+            rx.bytes_received
+        );
     }
     (sim.stations[1].stats().bytes_received, sim.airtime())
 }
