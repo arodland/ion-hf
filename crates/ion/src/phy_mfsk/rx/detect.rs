@@ -122,7 +122,7 @@ impl MfskRx {
             d: [0; 3],
             e: Default::default(),
             e1: Default::default(),
-            tried: [false; 4],
+            tried: [false; crate::phy_mfsk::frame::HYPS.len()],
             slot: self.in_slot(t0c),
         });
     }

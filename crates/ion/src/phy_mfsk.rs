@@ -87,6 +87,11 @@ pub fn info(mode: MfskMode) -> MfskInfo {
     }
 }
 
+/// Audio samples of the MFSK part of a composite burst ([`modulate_cue`]).
+pub fn cue_samples(mode: MfskMode) -> usize {
+    PRE_LEN * SYMBOL_SAMPLES + frame::header_symbols(mode, Kind::Cue) * Fmt::of(mode).sym * DEC + TAIL
+}
+
 /// Duration of a header-only burst (`modulate` with no bits), seconds.
 pub fn header_only_s(mode: MfskMode) -> f32 {
     burst_samples(mode, 0) as f32 / 48_000.0
@@ -125,7 +130,18 @@ pub fn modulate(mode: MfskMode, user: u16, extra: u16, bits: &[u8], center_hz: f
         max_bits(mode)
     );
     let data = frame::data_values(mode, bits);
-    build(mode, user, extra, bits.len(), data, center_hz)
+    let kind = if bits.is_empty() { Kind::HeaderOnly } else { Kind::Data };
+    build(mode, kind, user, extra, bits.len(), data, center_hz)
+}
+
+/// The MFSK part of a composite burst: preamble and a header carrying
+/// `user` and `extra` (32 bits), marked as a cue, for a burst in another
+/// waveform that follows it directly ([`cue_samples`] after its start).
+/// The receiver hands it out with [`MfskBurst::cue`] set.
+pub fn modulate_cue(mode: MfskMode, user: u16, extra: u16, center_hz: f32) -> Vec<f32> {
+    let out = build(mode, Kind::Cue, user, extra, 0, Vec::new(), center_hz);
+    debug_assert_eq!(out.len(), cue_samples(mode));
+    out
 }
 
 /// [`modulate`] for whole 32-ary code symbols (0..32, e.g. the GF(32)
@@ -144,15 +160,22 @@ pub fn modulate_symbols(mode: MfskMode, user: u16, extra: u16, syms: &[u8], cent
         return modulate(mode, user, extra, &[], center_hz);
     }
     let data = frame::data_values_sym(mode, syms);
-    build(mode, user, extra, nbits | frame::SYM_FLAG, data, center_hz)
+    build(mode, Kind::Data, user, extra, nbits | frame::SYM_FLAG, data, center_hz)
 }
 
 /// Preamble, header (length field `nbits_field`, 0 for header-only) and
 /// the data symbols' tone values.
-fn build(mode: MfskMode, user: u16, extra: u16, nbits_field: usize, data: Vec<[u16; 3]>, center_hz: f32) -> Vec<f32> {
+fn build(
+    mode: MfskMode,
+    kind: Kind,
+    user: u16,
+    extra: u16,
+    nbits_field: usize,
+    data: Vec<[u16; 3]>,
+    center_hz: f32,
+) -> Vec<f32> {
     let fmt = Fmt::of(mode);
     let nbits = nbits_field & !frame::SYM_FLAG;
-    let kind = if nbits == 0 { Kind::HeaderOnly } else { Kind::Data };
     let info = frame::header_bits(mode, kind, user, extra, nbits_field);
     let mut values = frame::header_values(mode, kind, &info);
     values.extend(data);
@@ -177,7 +200,7 @@ fn build(mode: MfskMode, user: u16, extra: u16, nbits_field: usize, data: Vec<[u
         });
     }
     let out = synthesize(&syms, center_hz);
-    debug_assert_eq!(out.len(), burst_samples(mode, nbits));
+    debug_assert!(kind == Kind::Cue || out.len() == burst_samples(mode, nbits));
     out
 }
 
@@ -464,6 +487,9 @@ pub struct MfskBurst {
     /// Delay and Doppler spread and effective SNR over the data (only the
     /// effective SNR, equal to `snr_db`, for a header-only burst).
     pub chan: crate::chan::ChannelMeas,
+    /// The MFSK part of a composite burst ([`modulate_cue`]): no data, and
+    /// the burst it announces starts [`cue_samples`] after `start_sample`.
+    pub cue: bool,
 }
 
 #[cfg(test)]

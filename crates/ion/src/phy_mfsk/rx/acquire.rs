@@ -468,6 +468,7 @@ impl MfskRx {
         let start_sample = self.audio_start(t0).max(0) as u64;
         Active {
             mode,
+            cue: kind == Kind::Cue,
             symbols,
             user,
             extra,
