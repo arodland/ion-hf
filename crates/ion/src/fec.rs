@@ -251,6 +251,12 @@ impl Decoder {
         self.run(main_code(), llrs)
     }
 
+    /// Posterior LLRs of the first `n` positions of the transmission order
+    /// after the last [`Self::decode_prefix`], decoded or not.
+    pub(crate) fn prefix_posterior(&self, n: usize) -> Vec<f32> {
+        self.posterior(main_code(), n)
+    }
+
     /// Decodes [`n_short`] LLRs of the short code.
     pub fn decode_short(&mut self, llrs: &[f32]) -> Option<Vec<u8>> {
         assert_eq!(llrs.len(), N_SHORT, "decode_short: expected n_short() LLRs");

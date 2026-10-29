@@ -237,6 +237,7 @@ impl Medium for ModelMedium {
                 c
             },
             slot: 0,
+            grid: None,
         })
     }
 }

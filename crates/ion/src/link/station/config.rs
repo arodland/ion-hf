@@ -46,6 +46,11 @@ pub struct Config {
     /// Incremental redundancy for long frames. Off: failed frames are
     /// neither kept nor continued, only resent.
     pub harq: bool,
+    /// Iterative receiver for OFDM long-frame data bursts with a failed
+    /// codeword: up to this many passes of channel re-estimation and
+    /// interference cancellation fed by the decoder (0: off), fewer on
+    /// long bursts ([`super::TURBO_SYMBOLS`]).
+    pub turbo: usize,
     /// Offer (calling) or accept (called) compression of the stream
     /// ([`crate::link::compress`]): used only when both ends have it on, agreed
     /// in the ConnReq and ConnAck. Each [`super::Station::send`] then goes out as
@@ -158,6 +163,7 @@ impl Config {
             loss_hold_s: 15.0,
             skip_slices_from: SKIP_SLICES_FROM,
             harq: true,
+            turbo: super::TURBO_PASSES,
             compress: false,
             pick_family: true,
             eff_snr: true,

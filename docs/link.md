@@ -261,6 +261,21 @@ level change (`llrs_combine_across_a_level_change`), but stored codewords
 are not continued in another guard
 (`stored_codewords_are_not_continued_in_another_guard`).
 
+**Iterative receiver** (`Config::turbo`, default 2 passes). When an OFDM
+long-frame burst arrives with a codeword that does not decode, the
+station gives the receiver's snapshot of the burst (`Incoming::grid`,
+[phy.md](phy.md#iterative-data-stage)) a prior per bit: the re-encoded
+bits of the codewords that decoded, the decoder's posteriors of the
+others, and decodes the burst again from the store as it was before it
+(`HarqRx::receive_turbo`). Passes go on while each one decodes more; the
+store keeps the LLRs of the best. A pass costs about 0.5 ms of CPU per
+data symbol, so a burst gets at most `TURBO_SYMBOLS` (1000) symbol
+passes: two on an 8 s Normal burst (~0.4 s), one on a 16 s one, none on
+the longest, so that the ACK is not held up past the peer's reply slack.
+The posteriors fed back do not make the stored LLRs of codewords that
+still fail any worse (`rx_lab.rs` `turbo_fer`: 0.422 bit of information
+per coded bit either way on MPP, 0.4054 → 0.4058 on MPG).
+
 ## Slice placement
 
 The receiving side watches the three thirds of the passband a slice burst
@@ -352,6 +367,7 @@ HF leaves compression off on links; nets compress direct messages
 | `idle_s`, `break_in_s`, `link_timeout_s` | 10 s, 20 s, 120 s | |
 | `loss_hold_s`, `fail_hold_s`, `fail_hold_max_s` | 15 s, 30 s, 480 s | |
 | `harq` | on | |
+| `turbo` | 2 | passes of the iterative receiver (0: off) |
 | `pick_family`, `eff_snr` | on, on | channel report |
 | `burst_adapt`, `burst_overhead`, `burst_steady_db` | on, 12%, 3 dB | |
 | `tiny_ack_all`, `cheap_ack_margin_db` | on, 0 dB | |
@@ -362,7 +378,7 @@ HF leaves compression off on links; nets compress direct messages
 | `compress` | off | |
 
 `tests/ionos.rs` switches some of these for comparisons (`ION_SMOOTH=0`,
-`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`).
+`ION_HOLD=0`, `ION_POWER=1`, `ION_START=floor`, `ION_TURBO=n`).
 
 ## Over the air
 

@@ -190,6 +190,13 @@ impl Decoder {
         None
     }
 
+    /// Posterior LLRs of the first `n_tx` transmitted bits after the last
+    /// decode.
+    pub(crate) fn posterior(&self, code: &QcCode, n_tx: usize) -> Vec<f32> {
+        let t0 = code.tx_start();
+        self.post[t0..t0 + n_tx].to_vec()
+    }
+
     /// Extrinsic LLRs of the transmitted bits after the last
     /// [`Self::soft_run`]: what the code (and the prior) says about each
     /// bit beyond its own channel LLR (posterior minus channel).

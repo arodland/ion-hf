@@ -5,6 +5,7 @@ use crate::level::{FrameSize, Guard, LADDER, Wave};
 use crate::link::frame::{AckInfo, Frame, Kind, TINY_ACK_FRAMES, Tiny, flags};
 use crate::link::harq;
 use crate::link::report::ChanReport;
+use crate::phy::REFINE_K;
 use crate::phy_mfsk::MfskMode;
 
 /// For a data burst in `data`, the shorter waveforms its tiny ACK may
@@ -40,8 +41,18 @@ impl Station {
             let combined;
             let frames = match &inc.soft {
                 Some(soft) if long => {
-                    let r = self.harq.receive(inc.code, user_hi(inc.user) >> 2, soft);
+                    let hq = user_hi(inc.user) >> 2;
+                    let r = match &inc.grid {
+                        Some(grid) if self.cfg.turbo > 0 => {
+                            let passes = self.cfg.turbo.min(super::TURBO_SYMBOLS / grid.data_symbols().max(1));
+                            self.harq
+                                .receive_turbo(inc.code, hq, soft, passes, &mut |p| grid.refine(p, REFINE_K))
+                        }
+                        _ => self.harq.receive(inc.code, hq, soft),
+                    };
                     self.stats.harq_recovered += r.recovered as u32;
+                    self.stats.turbo_recovered += r.turbo as u32;
+                    self.stats.turbo_bursts += (r.turbo_passes > 0) as u32;
                     combined = r
                         .frames
                         .iter()

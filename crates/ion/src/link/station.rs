@@ -61,6 +61,13 @@ pub fn frame_bits(code: usize, frames: usize) -> usize {
     }
 }
 
+/// Default [`Config::turbo`]: passes of the iterative receiver.
+pub const TURBO_PASSES: usize = 2;
+/// The iterative receiver's budget per burst: passes times data symbols
+/// (a pass costs about 0.5 ms of CPU per symbol), so that the ACK of a
+/// long burst is not held up.
+pub const TURBO_SYMBOLS: usize = 1000;
+
 /// No progress for this long: every retry and ACK goes in the floor
 /// waveform until something gets through.
 const STALL_S: f64 = 45.0;
@@ -179,6 +186,9 @@ pub struct Incoming {
     /// The receiving side's pick of the third of the passband for slice
     /// bursts (`crate::slots`; 0 the centre), as of this burst.
     pub slot: u8,
+    /// OFDM data bursts: what the receiver saw, to decode the burst again
+    /// with what the decoder learnt (`Config::turbo`).
+    pub grid: Option<Arc<crate::phy::BurstGrid>>,
 }
 
 /// For the PHY header: `code`'s [`air_code`] in bits 0–3, `session`
@@ -254,6 +264,10 @@ pub struct Stats {
     /// codewords decoded only thanks to combining.
     pub codewords_failed: u32,
     pub harq_recovered: u32,
+    /// Codewords the iterative receiver (`Config::turbo`) decoded that a
+    /// plain decode had not, and the bursts it ran on.
+    pub turbo_recovered: u32,
+    pub turbo_bursts: u32,
     pub polls: u32,
     /// Seconds we were on the air.
     pub airtime_s: f64,

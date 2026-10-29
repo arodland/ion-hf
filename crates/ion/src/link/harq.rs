@@ -14,6 +14,9 @@ use super::audio::bits_to_bytes;
 use crate::fec::{self, Decoder, Rate};
 use crate::level::{FrameSize, LADDER};
 
+/// A sure LLR, for the bits an iterative receiver knows.
+const SURE: f32 = 20.0;
+
 /// A codeword that has had this many bits sent without decoding is dropped
 /// (by both sides, without signalling) and sent fresh: two full passes of
 /// the mother code.
@@ -70,6 +73,17 @@ pub struct ModelSlot {
     pub gamma: f32,
 }
 
+/// One slot of the last [`HarqRx::receive`], for an iterative receiver:
+/// its transmission-order span, and the codeword's information bits if it
+/// decoded, else the decoder's posteriors.
+struct Trace {
+    from: usize,
+    bits: usize,
+    info: Option<Vec<u8>>,
+    post: Vec<f32>,
+}
+
+#[derive(Clone)]
 struct Entry {
     /// Combined LLRs (or model SNRs) per transmission-order position.
     acc: Vec<f32>,
@@ -90,6 +104,10 @@ pub struct Received {
     pub parity: usize,
     /// Codewords decoded thanks to combining.
     pub recovered: usize,
+    /// Codewords decoded thanks to the iterative receiver
+    /// ([`HarqRx::receive_turbo`]), and its passes.
+    pub turbo: usize,
+    pub turbo_passes: usize,
     /// The failed slots are kept (except those past [`H_MAX`]). False when
     /// the layout could not be worked out: then nothing decodes or is kept.
     pub stored: bool,
@@ -102,6 +120,7 @@ pub struct HarqRx {
     spare: Vec<Vec<f32>>,
     decoder: Decoder,
     scratch: Vec<f32>,
+    trace: Option<Vec<Trace>>,
 }
 
 impl Default for HarqRx {
@@ -117,6 +136,7 @@ impl HarqRx {
             spare: Vec::new(),
             decoder: Decoder::new(),
             scratch: Vec::new(),
+            trace: None,
         }
     }
 
@@ -241,9 +261,99 @@ impl HarqRx {
         out
     }
 
+    /// [`Self::receive`] with an iterative receiver: after a decode with
+    /// codewords failed, `refine` gets an LLR per bit of the burst (the
+    /// bits of codewords that decoded, sure; the others, the decoder's
+    /// posteriors; the pad, sure zeros) and gives the burst's LLRs again
+    /// from the channel estimate and equaliser that knowledge allows; the
+    /// burst is then received again from the store as it was. Up to
+    /// `passes` times, while each pass decodes more; the store keeps the
+    /// LLRs of the best pass.
+    pub fn receive_turbo(
+        &mut self,
+        level: usize,
+        hq: u8,
+        soft: &Soft,
+        passes: usize,
+        refine: &mut dyn FnMut(&[f32]) -> Vec<f32>,
+    ) -> Received {
+        let Soft::Llrs(llrs) = soft else {
+            return self.receive(level, hq, soft);
+        };
+        if passes == 0 {
+            return self.receive(level, hq, soft);
+        }
+        let before = self.entries.clone();
+        self.trace = Some(Vec::new());
+        let mut out = self.receive(level, hq, soft);
+        let mut trace = self.trace.take().unwrap_or_default();
+        let ok = |r: &Received| r.frames.iter().filter(|f| f.is_some()).count();
+        for _ in 0..passes {
+            if !out.stored || ok(&out) == out.frames.len() {
+                break;
+            }
+            let mut prior = vec![SURE; llrs.len()];
+            let mut pos = 0;
+            for t in &trace {
+                let span = &mut prior[pos..pos + t.bits];
+                match &t.info {
+                    Some(info) => {
+                        for (p, b) in span.iter_mut().zip(fec::encode_span(info, t.from, t.bits)) {
+                            *p = if b == 0 { SURE } else { -SURE };
+                        }
+                    }
+                    None => {
+                        for (i, p) in span.iter_mut().enumerate() {
+                            *p = t.post.get((t.from + i) % fec::N_MOTHER).copied().unwrap_or(0.0);
+                        }
+                    }
+                }
+                pos += t.bits;
+            }
+            let fresh = refine(&prior);
+            out.turbo_passes += 1;
+            let after = std::mem::replace(&mut self.entries, before.clone());
+            self.trace = Some(Vec::new());
+            let again = self.receive(level, hq, &Soft::Llrs(fresh));
+            let t2 = self.trace.take().unwrap_or_default();
+            if ok(&again) <= ok(&out) {
+                self.entries = after;
+                break;
+            }
+            out = Received {
+                turbo: out.turbo + ok(&again) - ok(&out),
+                turbo_passes: out.turbo_passes,
+                ..again
+            };
+            trace = t2;
+        }
+        out
+    }
+
+    /// Test hook: the combined LLRs of each stored codeword, in order.
+    #[doc(hidden)]
+    pub fn stored_llrs(&self) -> Vec<Vec<f32>> {
+        self.entries
+            .iter()
+            .map(|e| e.acc[..e.h.min(fec::N_MOTHER)].to_vec())
+            .collect()
+    }
+
     /// Tries to decode `e`; keeps it if it fails and has bits left to go.
     fn settle(&mut self, e: Entry, bits: usize, combined: bool, out: &mut Received) {
         let got = self.decode(&e);
+        if let Some(tr) = self.trace.as_mut() {
+            tr.push(Trace {
+                from: (e.h - bits) % fec::N_MOTHER,
+                bits,
+                info: got.as_ref().map(|b| super::audio::bytes_to_bits(b)),
+                post: if got.is_some() {
+                    Vec::new()
+                } else {
+                    self.decoder.prefix_posterior(e.h.min(fec::N_MOTHER))
+                },
+            });
+        }
         out.bits.push(bits);
         if got.is_some() {
             out.recovered += combined as usize;

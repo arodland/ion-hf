@@ -794,6 +794,46 @@ Every WGN, MPG and MPP point is within one codeword of the plateau rule
 (three codewords in 540 at two MPG points); MPD has a floor of 2–7%
 of codewords lost in bursts that fade whole.
 
+### Iterative data stage
+
+Each data burst carries a snapshot of what its data stage saw
+(`RxBurst::grid`: the drift- and phase-corrected grid, the preamble's
+noise per carrier and the noise each data cell was demapped with), so
+the link can decode it again with what the decoder learnt while the
+receiver goes on to the next burst. `BurstGrid::refine(prior, k)` takes
+an LLR per data bit and returns new LLRs (`phy/rx/refine.rs`):
+
+- **Channel estimate.** Every data cell becomes a pilot too: its
+  expected value under the prior `x̄` with noise `σ² + p_h·Var[x]`
+  (Valenti & Woerner 2001; Sandell et al. 1998); cells whose expected
+  value carries less than 10% of the constellation's energy are left
+  out. The Wiener model is chosen again by cross-validation and each
+  estimate takes 40 pilots (`REFINE_K`), leaving the cell's own sample
+  out.
+- **Equaliser** (DFT-spread levels). Soft interference cancellation in
+  the frequency domain (Tüchler & Singer 2011): each despread symbol is
+  equalised with the expected values of the others taken out and an
+  MMSE filter for what remains uncertain. The decoder's posteriors work
+  better here than its extrinsics (receiver experiment, `exp-rx`): the
+  filter removes each symbol's own expected value with the others and
+  puts it back, and the channel estimate leaves each cell's own sample
+  out, so a posterior feeds back on itself only weakly.
+
+Measured (`tests/rx_lab.rs`, `turbo_fer`: Normal QPSK 1/2, 8 s bursts,
+IONOS 2 paths, 30 bursts per point, the station's path
+`HarqRx::receive_turbo` with 0, 1, 2 and 4 passes on the same audio),
+S:N at 10% / 30% / 50% codeword loss:
+
+| Passes | WGN | MPG | MPP | MPD |
+|---|---:|---:|---:|---:|
+| 0 | 4.9 / 4.5 / 4.3 | 10.1 / 7.7 / 6.5 | 7.3 / 6.7 / 6.2 | 10.0 / 8.2 / < 8 |
+| 1 | 4.9 / 4.4 / 4.3 | 9.9 / 7.1 / 6.2 | 7.0 / 6.1 / 5.5 | 10.0 / < 8 / < 8 |
+| 2 | 4.9 / 4.4 / 4.3 | 9.7 / 7.1 / 6.2 | 7.0 / 5.7 / 5.3 | 10.0 / < 8 / < 8 |
+| 4 | 4.9 / 4.4 / 4.3 | 9.2 / 7.1 / 6.2 | 7.0 / 5.6 / 5.2 | 10.0 / < 8 / < 8 |
+
+MPD at 8 dB: 34% of codewords lost without, 13–14% with. A pass took
+about 180 ms on an 8 s burst (one core of the test machine, six busy).
+
 ### Long echoes and the channel measurement
 
 Echoes past a 4 ms guard do not show in the decision-directed delay

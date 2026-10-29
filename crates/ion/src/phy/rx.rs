@@ -2,6 +2,7 @@
 //! data stage is in [`demod`], clock-drift tracking in [`drift`].
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use ion_dsp::dsp::{AUDIO_RATE, Complex, Decimator, Nco};
 
@@ -15,9 +16,11 @@ use super::{Constellation, HO_COPIES, Numerology, Pilots, check_center, front_en
 
 mod demod;
 mod drift;
+mod refine;
 mod retime;
 
 use drift::Drift;
+pub use refine::{BurstGrid, REFINE_K};
 
 /// One received burst.
 #[derive(Clone, Debug)]
@@ -54,6 +57,9 @@ pub struct RxBurst {
     pub chan: ChannelMeas,
     /// How the data symbols were sent (from the header).
     pub mode: DataMode,
+    /// Data bursts: what the data stage saw, to decode the burst again
+    /// with what the decoder learnt ([`BurstGrid::refine`]).
+    pub grid: Option<Arc<BurstGrid>>,
 }
 
 /// Receiver counters.

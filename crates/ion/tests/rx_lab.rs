@@ -14,11 +14,13 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use ion::fec::{self, Rate};
 use ion::level::{LADDER, Wave};
 use ion::link::audio;
-use ion::phy::{self, Constellation, Numerology, PhyRx, Pilots, RxStats};
+use ion::link::harq::{HarqRx, Soft};
+use ion::phy::{self, Constellation, Numerology, PhyRx, Pilots, REFINE_K, RxStats};
 use ion_dsp::ionos::{Ionos, Mode, Reference, reference_power};
 
 fn env<T: std::str::FromStr>(k: &str) -> Option<T> {
@@ -254,6 +256,141 @@ fn timing_fer() {
                 crossing(c, 0.1),
                 crossing(c, 0.3),
                 crossing(c, 0.5)
+            );
+        }
+    }
+}
+
+/// Mutual information per bit (bits) that LLRs `llrs` carry about the
+/// coded bits `truth`, assuming they are calibrated: what a combining
+/// receiver gets from them. Confident wrong LLRs cost more than they give.
+fn llr_info(llrs: &[f32], truth: &[u8]) -> f64 {
+    let n = llrs.len().min(truth.len());
+    let loss: f64 = (0..n)
+        .map(|i| {
+            let s = if truth[i] == 0 { 1.0 } else { -1.0 };
+            (1.0 + (-(s * llrs[i]) as f64).exp()).log2()
+        })
+        .sum();
+    1.0 - loss / n.max(1) as f64
+}
+
+/// The iterative receiver (`HarqRx::receive_turbo`, the station's path)
+/// against one plain decode, on the same bursts: codeword loss per
+/// `RX_PASSES` (default `0,1,2,4`; 0 is the plain receiver), CPU per
+/// pass, and the information the stored LLRs of codewords that failed
+/// either way carry about their bits (HARQ combines them with the next
+/// increment: the posteriors fed back must not make them worse).
+#[test]
+#[ignore]
+fn turbo_fer() {
+    let l: usize = env("RX_LEVEL").unwrap_or(10);
+    let secs: f64 = env("RX_SECS").unwrap_or(8.0);
+    let bursts: u64 = env("RX_BURSTS").unwrap_or(30);
+    let passes: Vec<usize> = list("RX_PASSES", "0,1,2,4");
+    let r = LADDER[l].rate;
+    for m in modes() {
+        let snrs: Vec<f32> = list("RX_SNRS", default_snrs(m));
+        let jobs: Vec<(usize, f32, u64)> = snrs
+            .iter()
+            .enumerate()
+            .flat_map(|(si, &s)| (0..bursts).map(move |b| (si, s, b)))
+            .collect();
+        // Per pass count: frames decoded, frames, per frame decoded or not
+        // and its stored LLRs' information, refine seconds and passes run.
+        // Wrong codewords (passing every check) last.
+        type Out = Vec<(usize, usize, Vec<Option<f64>>, f64, usize, usize)>;
+        let res: Vec<Out> = parallel(&jobs, Vec::new(), |&(_, s, b)| {
+            let seed = 11 + b + 1000 * l as u64 + 100_000 * m as u64;
+            let bu = burst(l, m, s, seed, secs);
+            let mut rx = PhyRx::with_numerology(bu.num, bu.center);
+            let mut got = Vec::new();
+            rx.process(&bu.audio, &mut got);
+            let Some(x) = got.into_iter().find(|x| x.user == bu.user && !x.header_only) else {
+                return passes
+                    .iter()
+                    .map(|_| (0, bu.infos.len(), Vec::new(), 0.0, 0, 0))
+                    .collect();
+            };
+            let grid = x.grid.clone().expect("data burst");
+            let soft = Soft::Llrs(x.llrs.clone());
+            passes
+                .iter()
+                .map(|&p| {
+                    let mut h = HarqRx::new();
+                    let mut t = 0.0;
+                    let rcv = h.receive_turbo(l, 0, &soft, p, &mut |prior| {
+                        let t0 = Instant::now();
+                        let o = grid.refine(prior, REFINE_K);
+                        t += t0.elapsed().as_secs_f64();
+                        o
+                    });
+                    let mut stored = h.stored_llrs().into_iter();
+                    let mut wrong = 0;
+                    let per: Vec<Option<f64>> = rcv
+                        .frames
+                        .iter()
+                        .zip(&bu.infos)
+                        .map(|(f, info)| match f {
+                            Some(bytes) => {
+                                wrong += usize::from(audio::bytes_to_bits(bytes)[..fec::K] != info[..]);
+                                None
+                            }
+                            None => stored.next().map(|llrs| llr_info(&llrs, &fec::encode(r, info))),
+                        })
+                        .collect();
+                    let ok = per.iter().filter(|v| v.is_none()).count() - wrong;
+                    (ok, bu.infos.len(), per, t, rcv.turbo_passes, wrong)
+                })
+                .collect()
+        });
+        println!("\n### turbo L{l} {}, {bursts} bursts per point", m.name());
+        println!(
+            "| S:N | {} |",
+            passes
+                .iter()
+                .map(|p| format!("{p} passes: loss | ms/pass | wrong"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+        let mut curves = vec![Vec::new(); passes.len()];
+        let mut info = vec![(0f64, 0usize); passes.len()];
+        for (si, &s) in snrs.iter().enumerate() {
+            let mut row = format!("| {s} |");
+            for (pi, curve) in curves.iter_mut().enumerate() {
+                let (mut ok, mut all, mut t, mut np, mut bad) = (0, 0, 0.0, 0, 0);
+                for (j, rr) in jobs.iter().zip(&res) {
+                    if j.0 == si {
+                        ok += rr[pi].0;
+                        all += rr[pi].1;
+                        t += rr[pi].3;
+                        np += rr[pi].4;
+                        bad += rr[pi].5;
+                        // Codewords failed under every pass count.
+                        for (f, v) in rr[pi].2.iter().enumerate() {
+                            if let Some(v) = v
+                                && rr.iter().all(|o| o.2.get(f).is_some_and(|x| x.is_some()))
+                            {
+                                info[pi].0 += v;
+                                info[pi].1 += 1;
+                            }
+                        }
+                    }
+                }
+                let loss = 1.0 - ok as f32 / all.max(1) as f32;
+                curve.push((s, loss));
+                row += &format!(" {loss:.3} | {:.0} | {bad} |", 1e3 * t / np.max(1) as f64);
+            }
+            println!("{row}");
+        }
+        for ((p, c), (isum, n)) in passes.iter().zip(&curves).zip(&info) {
+            println!(
+                "{} {p} passes: 10% {} 30% {} 50% {}; stored LLRs of {n} codewords failed every way: {:.4} bit/bit",
+                m.name(),
+                crossing(c, 0.1),
+                crossing(c, 0.3),
+                crossing(c, 0.5),
+                isum / (*n).max(1) as f64
             );
         }
     }

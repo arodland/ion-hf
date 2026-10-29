@@ -307,6 +307,7 @@ pub fn decode(b: &phy::RxBurst) -> Incoming {
         snr_db: b.snr_db,
         chan: b.chan,
         slot: 0,
+        grid: b.grid.clone(),
     }
 }
 
@@ -337,6 +338,7 @@ pub fn decode_mfsk(b: &MfskBurst) -> Incoming {
         snr_db: b.snr_db,
         chan: b.chan,
         slot: 0,
+        grid: None,
     }
 }
 
