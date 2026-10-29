@@ -18,6 +18,7 @@ use ion::link::{Air, Config, Expected, Incoming, Outgoing, State, Station};
 struct Tally {
     data: (usize, usize),
     tiny: (usize, usize),
+    cued: usize,
     largest: usize,
 }
 
@@ -51,10 +52,14 @@ impl Medium for Checking {
             });
             let mut t = self.tally.borrow_mut();
             // Data bursts the receiver can use a header guess for: slow
-            // levels, bursts no longer than `max_burst_s`.
+            // levels, bursts no longer than `max_burst_s`. A cued burst's
+            // header comes from its cue, and a partial one (its count
+            // only in the cue) is useless without it, so none is listed.
             let slow = b.code < LADDER.len() && EFF_THRESHOLDS_DB[b.code] <= 5.0;
             let short = self.air.duration(b.wave, b.code, b.coded_bits()) <= Config::new("X").max_burst_s;
-            if slow && short && e.iter().any(|x| x.code < LADDER.len()) {
+            if b.cue {
+                t.cued += 1;
+            } else if slow && short && e.iter().any(|x| x.code < LADDER.len()) {
                 t.data.0 += 1;
                 t.data.1 += found as usize;
             } else if b.code == TINY && e.iter().any(|x| x.code == TINY && x.user == b.user) {
@@ -74,9 +79,21 @@ fn payload(n: usize) -> Vec<u8> {
 fn the_peers_next_burst_is_expected() {
     let air: Arc<dyn Air> = Arc::new(ModelAir::default());
     let tally = Rc::new(RefCell::new(Tally::default()));
-    for (seed, snr) in [(1, 3.0), (2, 8.0), (3, 14.0)] {
-        let a = Station::new(Config::new("N0ABC"), air.clone());
-        let mut b = Station::new(Config::new("W1AW"), air.clone());
+    // Without cues (a peer that has none) every data burst needs its
+    // header; with them, those that go out uncued.
+    for (cue, seed, snr) in [
+        (false, 1, 3.0),
+        (false, 2, 8.0),
+        (false, 3, 14.0),
+        (true, 1, 3.0),
+        (true, 2, 8.0),
+    ] {
+        let cfg = |call: &str| Config {
+            cue,
+            ..Config::new(call)
+        };
+        let a = Station::new(cfg("N0ABC"), air.clone());
+        let mut b = Station::new(cfg("W1AW"), air.clone());
         b.listen();
         assert!(b.expected().is_empty(), "nothing is expected while listening");
         let mut m = ModelMedium::new(snr, seed);
@@ -102,8 +119,8 @@ fn the_peers_next_burst_is_expected() {
     }
     let t = tally.borrow();
     println!(
-        "data bursts expected: {} of {}; tiny bursts: {} of {}; largest set {}",
-        t.data.1, t.data.0, t.tiny.1, t.tiny.0, t.largest
+        "data bursts expected: {} of {}; tiny bursts: {} of {}; cued bursts {}; largest set {}",
+        t.data.1, t.data.0, t.tiny.1, t.tiny.0, t.cued, t.largest
     );
     assert!(
         t.data.0 > 50 && t.data.1 * 20 >= t.data.0 * 19,

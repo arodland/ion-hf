@@ -522,4 +522,41 @@ mod tests {
         );
         assert!(!r.stored && rx.is_empty());
     }
+
+    #[test]
+    fn the_turbo_receiver_keeps_a_partial_layout() {
+        let level = LADDER.iter().position(|l| l.frame == FrameSize::Long).unwrap();
+        let slot = LADDER[level].coded_bits();
+        let inc = increment(slot, slot);
+        let mut x = 1u32;
+        let mut noise = |n: usize| -> Vec<f32> {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (x >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+                })
+                .collect()
+        };
+        let mut rx = HarqRx::new();
+        rx.receive(level, 0, &Soft::Llrs(noise(3 * slot)));
+        assert_eq!(rx.held(), vec![slot; 3]);
+        let field = partial_field(1, 3);
+        let mut priors = Vec::new();
+        let burst = noise(inc + slot);
+        let r = rx.receive_turbo(
+            level,
+            burst_check_bits(3, field),
+            field,
+            &Soft::Llrs(burst.clone()),
+            2,
+            &mut |p| {
+                priors.push(p.len());
+                burst.clone()
+            },
+        );
+        assert!(r.stored);
+        assert_eq!(r.parity, 1);
+        assert_eq!(priors, vec![inc + slot]);
+        assert_eq!(rx.held(), vec![slot, slot, slot + inc, slot]);
+    }
 }
