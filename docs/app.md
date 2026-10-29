@@ -10,7 +10,8 @@ top. It drives the radio over TCI
 
 ```text
 ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
-      [--setup] [--shots DIR] [--quit S] [--gear goodput|ladder]
+      [--setup] [--log] [--shots DIR] [--quit S] [--gear goodput|ladder]
+      [--size WxH] [--shot-set NAME --shot-at S]
 ```
 
 - `--loopback`: no radio; simulated stations answer (below). `--loop-snr`
@@ -18,16 +19,24 @@ ionhf [--loopback] [--loop-snr DB] [--tci ws://host:port] [--connect CALL]
   setting).
 - `--tci`: use TCI at this address instead of the configured radio.
 - `--connect`: call a station at start.
-- `--setup`: start on Setup.
+- `--setup`: start on Setup; `--log`: on the Log.
 - `--shots DIR`, `--quit S`: save the window to `DIR` every 15 s and close
   after `S` seconds (screenshots, scripted checks).
 - `--gear`: the link's choice of level for this run, over the `gear`
   setting (below).
+- `--size WxH`: the window at so many pixels, one point to a pixel
+  whatever the display's scaling (the saved window size is left alone).
+- `--shot-set NAME --shot-at S` (with `--shots`): instead of the 15 s
+  shots, one set `S` seconds in, at 1280x720 and 1920x1080, saved as
+  `NAME_1280.png` and `NAME_1920.png`.
+  `lab_runs/ui/capture.sh` takes the whole set in loopback, driven through
+  the host ports by `lab_runs/ui/drive.py`.
 
 ## Settings
 
-`ionhf.toml` holds the settings, `window.ron` the window, and `ion.log`
-the log (written by a release build started without a terminal):
+`ionhf.toml` holds the settings, `window.ron` the window, `logs/` the
+operator's log, and `ion.log` the program's diagnostics (written by a
+release build started without a terminal):
 
 | System | Folder |
 |---|---|
@@ -43,13 +52,72 @@ burst's level: `"goodput"` (the default) by expected throughput,
 `"ladder"` up and down the ladder as Ion HF 0.1.0-alpha.4 did, for an A/B
 on the air ([link.md](link.md), Gear shifting). Each end chooses for the
 bursts it sends; it takes effect from the next link.
+**Log file.** Everything the Log shows goes to `logs/ionhf.log` as it
+happens, one line each (`2026-10-29 19:38:53Z RX   CONACK +15 dB`), kept
+across runs. Past 2 MB it rolls over to `ionhf.1.log` (then `.2`, `.3`;
+the oldest goes). **Save** writes the lines the Log shows (its filter and
+search) to `logs/saved-<UTC time>.txt`; **Folder** opens `logs/`.
 
 ## Window
 
 | Screen | What it shows |
 |---|---|
-| Modem | S/N, Level, Rate and Data; the send progress while linked; the link's counts (Bursts, Frames, Resent, HARQ increments / recoveries, Lost codewords, Polls, Ctrl bursts, Air time, Allowed: the level the peer's reports allow); the open broadcast groups and who is heard in them; the band meter (how clean each third of the passband is here); the waterfall; the latest bursts and notes; **Disconnect** and **Abort** while linked. |
+| Modem | The lamp panel and the link's counts (Bursts, Frames, Resent, HARQ increments / recoveries, Lost codewords, Polls, Ctrl bursts, Air time), the open broadcast groups and who is heard in them; the level readout with S/N, Rate, Data and the send progress; the decode plot; the band meter (how clean each third of the passband is here); the waterfall; the Log. **Disconnect** and **Abort** sit beside the state while linked. |
+| Log | The Log in place of the passband, the panel still above. |
 | Setup | Station (call, grid), Radio (link type, port, model, sound cards with **Rescan**; applies on restart), Levels (drive and the OFDM level), Keying (PTT, **TX audio** and lead time), Host (the VARA-style ports). |
+
+### Lamps
+
+Annunciators: a lens with its legend in it, lit from behind in the
+colour of what it means, the legend then dark on the lit lens. An unlit
+lens stays dark with its legend dim but readable, so colour is never the
+only cue.
+Only WARN does anything when clicked (the Log, errors only).
+
+| Lamp | Lit |
+|---|---|
+| TX | keyed (red) |
+| RX | a burst is being received (green) |
+| LINK | green connected; amber calling or closing; red failed |
+| CW ID | our CW ID is on the air (amber), at a link's end or mid-link |
+| HOST | blue: a host program is on the command port; faint: the port is open, no program |
+| RIG | green: the radio link is up; amber: a radio setting will stop Ion (mode, filter) |
+| ARQ | a link is up or being set up (green) |
+| BCAST | a host program has broadcast groups open (violet); faint while a link holds the channel |
+| HARQ | for 3 s after we send a HARQ increment or a codeword decodes thanks to one (amber) |
+| RETRY | for 3 s after frames are sent again (amber) |
+| LOST | for 3 s after a codeword is lost after combining (red) |
+| WARN | for 60 s after a warning or error (amber) |
+| MFSK R0, MFSK R1, SLICE, LONG, OFDM | the waveform of the level on the air: blue ours, orange the peer's |
+
+### Level
+
+The level on the air (ours while we send, the peer's while it does; our
+last broadcast burst's when groups are open and no link is up), with its
+modulation and code rate, its waveform and the payload rate of a full
+burst of it. Under it the ladder L0–L16: the levels up to the current one
+lit, the ceiling the peer's reports allow marked above (▼), and below our
+level (blue ▲) and the peer's (orange ▲).
+
+### Decode plot
+
+The last three data bursts heard (link or broadcast), older ones fainter. OFDM: the
+equalised data symbols (at most 1000 a burst, despread on the low-PAPR
+levels) over the constellation's points. MFSK: per symbol, the share of
+its likeliest tone value (up) against 1 less the runner-up's (across),
+from the tone metrics, as Data2G plots its tones; clean symbols sit top
+right. Under it, the burst, its S/N and **OK** or **LOST n** codewords.
+The Ion worker makes plots only while the modem screen shows
+(`ion::link::node::Node::set_plot`).
+
+### Log
+
+Every note, burst, host event and error, newest at the bottom: **All**,
+**Link**, **Bursts**, **Host** or **Errors**, and a search. It follows the
+newest line until scrolled back; **LIVE** goes back to it. **Copy** puts
+the lines shown on the clipboard. Esc in the search box leaves the box;
+elsewhere it aborts the link as before. Drag the panel's
+top edge to resize it, or **Log** in the header gives it the window.
 
 ## Winlink host interface
 

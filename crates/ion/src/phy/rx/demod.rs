@@ -221,6 +221,7 @@ impl PhyRx {
             return RxBurst {
                 constellation: Constellation::Qpsk,
                 user: h.user,
+                eq: Vec::new(),
                 llrs: Vec::new(),
                 snr_db: self.snr_db(1, ng, &sig2[..nc]),
                 freq_offset_hz: self.f_hz as f32,
@@ -398,6 +399,8 @@ impl PhyRx {
             }
         }
 
+        let eq_step = (nsym * dc).div_ceil(super::EQ_MAX).max(1);
+        let mut eq = Vec::with_capacity(super::EQ_MAX);
         // LLRs per slot.
         if let Some(d) = self.debug.as_mut() {
             d.clear();
@@ -439,6 +442,10 @@ impl PhyRx {
                     va[j] = s2 + self.mbuf[cell] * g2;
                     continue;
                 }
+                if cell % eq_step == 0 {
+                    let h = self.hbuf[cell];
+                    eq.push((self.grid[g * nc + c] * h.conj()).scale(1.0 / (h.norm_sqr() * gain).max(1e-12)));
+                }
                 est::demap(
                     self.grid[g * nc + c],
                     self.hbuf[cell],
@@ -456,6 +463,9 @@ impl PhyRx {
                 let (mu, var) = est::fde(&ya[..dc], &self.hbuf[base..base + dc], &va[..dc], gain, z, &mut sp);
                 for (m, &zm) in z.iter().enumerate() {
                     let cell = base + m;
+                    if cell % eq_step == 0 && mu > 0.0 {
+                        eq.push(zm.scale(1.0 / mu));
+                    }
                     est::demap(
                         zm,
                         Complex::new(mu, 0.0),
@@ -493,6 +503,7 @@ impl PhyRx {
         RxBurst {
             constellation: cons,
             user: h.user,
+            eq,
             llrs,
             snr_db,
             freq_offset_hz: (self.f_hz + self.df_res) as f32,

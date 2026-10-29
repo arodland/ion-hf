@@ -61,7 +61,14 @@ pub struct RxBurst {
     /// Data bursts: what the data stage saw, to decode the burst again
     /// with what the decoder learnt ([`BurstGrid::refine`]).
     pub grid: Option<Arc<BurstGrid>>,
+    /// Equalised data symbols at the constellation's unit points (despread
+    /// in the low-PAPR mode), at most [`EQ_MAX`], evenly over the burst:
+    /// for a decode plot.
+    pub eq: Vec<Complex>,
 }
+
+/// Most equalised symbols an [`RxBurst`] keeps.
+pub const EQ_MAX: usize = 1000;
 
 /// Receiver counters.
 #[doc(hidden)]

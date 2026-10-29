@@ -2,7 +2,8 @@
 //! Express) on VARA-style host ports and KISS.
 //!
 //! Usage: ionhf [--loopback] [--tci ws://host:port] [--connect CALL]
-//! [--setup] [--shots DIR] [--quit S] [--loop-snr DB] [--gear goodput|ladder]
+//! [--setup] [--log] [--shots DIR] [--quit S] [--loop-snr DB]
+//! [--gear goodput|ladder] [--size WxH] [--shot-set NAME --shot-at S]
 //! ionhf --sim ...: headless stations on a simulated band (see `sim`)
 
 // Release builds are GUI-subsystem exes: no console window on launch.
@@ -14,8 +15,11 @@ mod engine;
 mod history;
 mod host;
 mod ion_engine;
+mod logbook;
+mod panel;
 #[cfg(test)]
 mod pipeline_tests;
+mod plot;
 mod radio;
 mod resample;
 mod rig;
@@ -46,6 +50,14 @@ struct Args {
     loop_snr: Option<f32>,
     /// The link's gear for this run, over the setting.
     gear: Option<config::Gear>,
+    /// Open on the log.
+    log: bool,
+    /// Window size in pixels (screenshots); the saved size is left alone.
+    size: Option<[f32; 2]>,
+    /// With `shots`: one set of screenshots `shot_at` seconds in, at
+    /// 1280x720 and 1920x1080, named after `shot_set`.
+    shot_set: Option<String>,
+    shot_at: Option<f64>,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +70,10 @@ fn parse_args() -> Args {
         quit: None,
         loop_snr: None,
         gear: None,
+        log: false,
+        size: None,
+        shot_set: None,
+        shot_at: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -73,6 +89,15 @@ fn parse_args() -> Args {
                 Some(g) => args.gear = Some(g),
                 None => eprintln!("--gear: goodput or ladder"),
             },
+            "--log" => args.log = true,
+            "--size" => {
+                args.size = it.next().and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some([w.parse().ok()?, h.parse().ok()?])
+                })
+            }
+            "--shot-set" => args.shot_set = it.next(),
+            "--shot-at" => args.shot_at = it.next().and_then(|v| v.parse().ok()),
             "-h" | "--help" => {
                 println!("ionhf [--loopback] [--tci ws://127.0.0.1:50001] [--connect CALL] [--setup]");
                 std::process::exit(0);
@@ -124,8 +149,8 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if args.loopback { "Ion HF (loopback)" } else { "Ion HF" })
-        .with_inner_size(app::SIZE)
-        .with_min_inner_size([480.0, 380.0]);
+        .with_inner_size(args.size.unwrap_or(app::SIZE))
+        .with_min_inner_size(app::MIN_SIZE);
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("window icon: {e}"),
@@ -134,6 +159,7 @@ fn main() -> eframe::Result {
         viewport,
         // Beside the settings file, so a portable install keeps it too.
         persistence_path: Some(Config::dir().join("window.ron")),
+        persist_window: args.size.is_none(),
         ..Default::default()
     };
 
@@ -230,7 +256,10 @@ fn main() -> eframe::Result {
                 app.connect(call);
             }
             app.setup |= args.setup;
+            app.log_view |= args.log;
             app.shots = args.shots.as_ref().map(std::path::PathBuf::from);
+            app.shot_set = args.shot_set.zip(args.shot_at);
+            app.pixel_size = args.size;
             app.quit_after = args.quit;
             Ok(Box::new(app))
         }),

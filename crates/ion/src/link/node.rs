@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::audio::{self, PhyAir, Receivers};
+use super::audio::{self, PhyAir, Receivers, RxPlot};
 use super::frame::{AckInfo, Frame, Kind, Tiny};
 use super::station::{Air, CONTROL, Config, Incoming, Station, TINY, user_hi, user_session};
 use crate::level::{LADDER, Wave};
@@ -27,6 +27,16 @@ pub struct BurstNote {
     pub calls: Option<(String, String)>,
     /// An ACK: the SNR it reports (how its sender hears the other side).
     pub reported_db: Option<f32>,
+}
+
+/// A data burst heard, as its receiver saw it ([`Node::set_plot`]).
+#[derive(Clone, Debug)]
+pub struct BurstPlot {
+    pub plot: RxPlot,
+    /// Its log line ([`BurstNote::what`]), SNR and failed codewords.
+    pub what: String,
+    pub snr_db: f32,
+    pub lost: u32,
 }
 
 /// A burst's log line, the calls of a connect request and the SNR an ACK
@@ -140,6 +150,7 @@ pub struct Node {
     /// Broadcast groups' bursts (by their ids) are kept for them as well.
     groups: Vec<u8>,
     group_in: Vec<Incoming>,
+    plots: Vec<BurstPlot>,
 }
 
 impl Node {
@@ -158,6 +169,7 @@ impl Node {
             journal: Vec::new(),
             groups: Vec::new(),
             group_in: Vec::new(),
+            plots: Vec::new(),
             id_every_s: None,
             last_key: f64::NEG_INFINITY,
             id_peer: String::new(),
@@ -174,6 +186,19 @@ impl Node {
     /// Bursts sent and heard since the last call (at most the last 256).
     pub fn take_journal(&mut self) -> Vec<BurstNote> {
         std::mem::take(&mut self.journal)
+    }
+
+    /// Keep a decode plot of every data burst heard (off by default).
+    pub fn set_plot(&mut self, on: bool) {
+        self.rx.set_plot(on);
+        if !on {
+            self.plots.clear();
+        }
+    }
+
+    /// Decode plots since the last call (at most the last 8).
+    pub fn take_plots(&mut self) -> Vec<BurstPlot> {
+        std::mem::take(&mut self.plots)
     }
 
     fn note(&mut self, n: BurstNote) {
@@ -205,7 +230,9 @@ impl Node {
         self.bursts.clear();
         self.rx.expect(&self.station.expected());
         self.rx.process(samples, &mut self.bursts);
+        let mut plots = self.rx.take_plots().into_iter();
         for inc in std::mem::take(&mut self.bursts) {
+            let plot = plots.next().flatten();
             self.bursts_heard += 1;
             if self.groups.contains(&user_session(inc.user)) {
                 self.group_in.push(inc.clone());
@@ -224,6 +251,17 @@ impl Node {
             self.codewords_failed += lost;
             let first = inc.frames.first().and_then(|f| f.as_deref());
             let (what, calls, reported_db) = describe(inc.code, inc.user, inc.extra, first, inc.frames.len());
+            if let Some(plot) = plot.filter(|_| inc.code < LADDER.len()) {
+                if self.plots.len() >= 8 {
+                    self.plots.remove(0);
+                }
+                self.plots.push(BurstPlot {
+                    plot,
+                    what: what.clone(),
+                    snr_db: inc.snr_db,
+                    lost,
+                });
+            }
             self.note(BurstNote {
                 tx: false,
                 level: (inc.code < LADDER.len()).then_some(inc.code),

@@ -1,7 +1,7 @@
 //! Colours and the small widgets every screen uses: dark, instrument-like,
 //! our station blue and the peer orange.
 
-use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Margin, Stroke, Vec2};
 
 pub const BG: Color32 = Color32::from_rgb(0x0E, 0x11, 0x15);
 pub const PANEL: Color32 = Color32::from_rgb(0x15, 0x1A, 0x20);
@@ -58,28 +58,6 @@ pub fn card() -> egui::Frame {
         .inner_margin(Margin::same(12))
 }
 
-/// A small caption above a value.
-pub fn caption(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(MUTED));
-}
-
-/// A keying lamp: TX, RX, Busy, Host.
-pub fn lamp(ui: &mut egui::Ui, label: &str, on: bool, color: Color32) {
-    let (fill, stroke, text) = if on {
-        (color.gamma_multiply(0.25), color, color)
-    } else {
-        (Color32::TRANSPARENT, Color32::from_rgb(0x3A, 0x45, 0x52), MUTED)
-    };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, stroke))
-        .corner_radius(CornerRadius::same(4))
-        .inner_margin(Margin::symmetric(9, 4))
-        .show(ui, |ui| {
-            ui.label(RichText::new(label).monospace().size(12.0).color(text).strong());
-        });
-}
-
 /// A pill showing the link state. Painted at its own size, so it reads the
 /// same in any layout (the header lays out right to left).
 pub fn pill(ui: &mut egui::Ui, color: Color32, text: &str, detail: &str) {
@@ -104,58 +82,6 @@ pub fn pill(ui: &mut egui::Ui, color: Color32, text: &str, detail: &str) {
         let x2 = x + g1.size().x + 8.0;
         p.galley(egui::pos2(x2, r.center().y - g2.size().y / 2.0), g2, MUTED);
     }
-}
-
-/// Which way the modem is moving data: an ARQ link, or broadcast frames
-/// to a group (`waiting`: groups are open but a link holds the channel).
-pub fn mode_pair(ui: &mut egui::Ui, arq: bool, bcast: bool, waiting: bool) {
-    let p = ui.painter();
-    let cells = [("ARQ", arq, OK, false), ("BCAST", bcast, NET, waiting)];
-    let galleys: Vec<_> = cells
-        .iter()
-        .map(|(t, ..)| p.layout_no_wrap(t.to_string(), egui::FontId::monospace(11.0), TEXT))
-        .collect();
-    let w: f32 = galleys.iter().map(|g| g.size().x + 16.0).sum();
-    let (r, _) = ui.allocate_exact_size(Vec2::new(w, 22.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect(
-        r,
-        CornerRadius::same(4),
-        INSET,
-        Stroke::new(1.0, LINE),
-        egui::StrokeKind::Inside,
-    );
-    let mut x = r.min.x;
-    for ((_, on, color, waiting), g) in cells.into_iter().zip(galleys) {
-        let cell = egui::Rect::from_min_size(egui::pos2(x, r.min.y), Vec2::new(g.size().x + 16.0, r.height()));
-        if on {
-            p.rect(
-                cell.shrink(1.0),
-                CornerRadius::same(3),
-                color.gamma_multiply(0.25),
-                Stroke::new(1.0, color.gamma_multiply(0.7)),
-                egui::StrokeKind::Inside,
-            );
-        }
-        let ink = if on {
-            TEXT
-        } else if waiting {
-            color.gamma_multiply(0.7)
-        } else {
-            MUTED.gamma_multiply(0.6)
-        };
-        p.galley(egui::pos2(cell.min.x + 8.0, cell.center().y - g.size().y / 2.0), g, ink);
-        x = cell.max.x;
-    }
-}
-
-/// A progress bar with mono text on it.
-pub fn bar(ui: &mut egui::Ui, frac: f32, color: Color32, text: &str) {
-    ui.add(
-        egui::ProgressBar::new(frac.clamp(0.0, 1.0))
-            .fill(color.gamma_multiply(0.45))
-            .text(RichText::new(text).monospace().color(TEXT)),
-    );
 }
 
 /// What the link has on the air: the whole passband, one third of it
@@ -224,22 +150,12 @@ pub fn level(l: usize) -> String {
 }
 
 /// A level without "OFDM", which its modulation already implies, or its
-/// guard ([`level_guard`]).
+/// guard.
 pub fn level_short(l: usize) -> String {
     level(l)
         .replacen(" OFDM", "", 1)
         .replacen(" slice", "", 1)
         .replacen(" long", "", 1)
-}
-
-/// "slice" or "long" for OFDM levels that are.
-pub fn level_guard(l: usize) -> Option<&'static str> {
-    use ion::level::{Guard, LADDER, Wave};
-    match LADDER.get(l)?.wave {
-        Wave::Ofdm(Guard::Slice) => Some("slice"),
-        Wave::Ofdm(Guard::Long) => Some("long"),
-        _ => None,
-    }
 }
 
 /// Bytes as "812 B" or "5.6 kB".

@@ -62,6 +62,8 @@ pub enum IonCmd {
     GroupSend(u8, Vec<u8>, Option<u16>),
     /// KISS persistence P for every group.
     GroupPersist(u8),
+    /// Decode plots of the bursts heard (off by default).
+    Plot(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +110,8 @@ pub struct IonStatus {
     /// S/N), newest first.
     pub groups: Vec<String>,
     pub heard: Vec<(String, f32)>,
+    /// Our CW ID is on the air.
+    pub cw_id: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +119,8 @@ pub enum IonEvent {
     Status(IonStatus),
     Received(Vec<u8>),
     Note(String),
+    /// A burst heard, as its receiver saw it ([`IonCmd::Plot`]).
+    Plot(Arc<ion::link::node::BurstPlot>),
 }
 
 /// The worker's command channel, and its audio channel for the DSP thread.
@@ -179,6 +185,10 @@ struct Worker {
     bcast_on_air: bool,
     /// When broadcast traffic last brought on a CW ID.
     bcast_id_at: f64,
+    /// Decode plots wanted (kept across new nodes).
+    plot: bool,
+    /// Broadcast bursts sent since the last status, for the log.
+    bcast_sent: Vec<ion::link::node::BurstNote>,
 }
 
 impl Worker {
@@ -207,6 +217,8 @@ impl Worker {
             ports: BTreeMap::new(),
             bcast_on_air: false,
             bcast_id_at: f64::NEG_INFINITY,
+            plot: false,
+            bcast_sent: Vec::new(),
         }
     }
 
@@ -285,6 +297,7 @@ impl Worker {
             State::Idle | State::Listening | State::Disconnected | State::Failed
         );
         self.node = on_air_node(&self.call, self.gear, self.ofdm_db);
+        self.node.set_plot(self.plot);
         self.connected_at = None;
         self.closing = false;
         // A link cut short still gets its ID, before anything new; one
@@ -379,6 +392,10 @@ impl Worker {
                 }
             }
             IonCmd::GroupPersist(p) => self.bcast.set_persistence(p),
+            IonCmd::Plot(on) => {
+                self.plot = on;
+                self.node.set_plot(on);
+            }
             IonCmd::SetOfdmDb(db) => {
                 self.ofdm_db = db;
                 self.node.set_ofdm_gain_db(db);
@@ -398,7 +415,8 @@ impl Worker {
     }
 
     fn status(&mut self) -> IonStatus {
-        let bursts = self.node.take_journal();
+        let mut bursts = self.node.take_journal();
+        bursts.append(&mut self.bcast_sent);
         let (slot_rx, band) = self.node.band();
         let s = self.node.station();
         let st = s.stats();
@@ -430,6 +448,7 @@ impl Worker {
             connected_s: self.connected_at.map_or(0.0, |t| self.now() - t),
             groups: self.bcast.groups(),
             heard: self.bcast.heard(self.now()),
+            cw_id: self.id_on_air,
         }
     }
 
@@ -506,6 +525,20 @@ impl Worker {
                 ));
                 self.bcast_on_air = true;
                 self.keyed_since_id = true;
+                self.bcast_sent.push(ion::link::node::BurstNote {
+                    tx: true,
+                    level: Some(b.code),
+                    what: format!(
+                        "BCAST {} ×{}",
+                        ion::sounding::level_name(b.code, b.wave),
+                        b.frames.len()
+                    ),
+                    snr_db: None,
+                    lost: 0,
+                    secs: audio.len() as f64 / SAMPLE_RATE as f64,
+                    calls: None,
+                    reported_db: None,
+                });
                 let _ = self.engine.send(Msg::IonTx(audio));
             }
             if !hold_tx
@@ -514,6 +547,9 @@ impl Worker {
             {
                 self.keyed_since_id = true;
                 let _ = self.engine.send(Msg::IonTx(burst));
+            }
+            for p in self.node.take_plots() {
+                self.event(IonEvent::Plot(Arc::new(p)));
             }
             let got = self.node.station_mut().take_received();
             if !got.is_empty() {
