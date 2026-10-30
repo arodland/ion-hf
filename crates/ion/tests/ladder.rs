@@ -435,6 +435,21 @@ impl Setup {
 /// Codeword error rate of one (constellation, rate) at one SNR, over bursts
 /// of about 1.5 s on `profile`.
 fn cer(set: &Setup, c: Constellation, r: Rate, profile: Profile, snr_db: f32, bursts: usize, seed: u64) -> f32 {
+    cer_with(set, &set.tx(c), c, r, profile, snr_db, bursts, seed)
+}
+
+/// [`cer`] with explicit transmit options.
+#[allow(clippy::too_many_arguments)]
+fn cer_with(
+    set: &Setup,
+    opt: &TxOptions,
+    c: Constellation,
+    r: Rate,
+    profile: Profile,
+    snr_db: f32,
+    bursts: usize,
+    seed: u64,
+) -> f32 {
     let per_symbol = set.data_carriers() * c.bits_per_symbol();
     let frames = (60 * per_symbol / r.n()).max(1);
     let center = set.num.center_hz();
@@ -451,7 +466,7 @@ fn cer(set: &Setup, c: Constellation, r: Rate, profile: Profile, snr_db: f32, bu
         for info in &infos {
             bits.extend(fec::encode(r, &audio::bytes_to_bits(info)));
         }
-        let tx = phy::modulate_full(set.num, c, 0, 0, &bits, center, &set.tx(c));
+        let tx = phy::modulate_full(set.num, c, 0, 0, &bits, center, opt);
         // `pep`: SNR against the mean power of a constant-envelope tone at
         // the burst's peak (a PEP-limited transmitter; every burst peaks at
         // `TX_LEVEL`), not the burst's own mean power.
@@ -700,6 +715,161 @@ fn clip_table() {
             } else {
                 "below".into()
             })
+        );
+    }
+}
+
+/// An `ION_TD` config for level `l`: `link` (the link's options) or
+/// `clip:spread:gain:headroom:k1/k2/..` (`clip`, `headroom`: `none`).
+fn td_opt(cfg: &str, l: usize) -> TxOptions {
+    if cfg == "link" {
+        return audio::tx_options(l);
+    }
+    let f: Vec<&str> = cfg.split(':').collect();
+    let lv = LADDER[l];
+    let opt_none = |v: &str| {
+        if v == "none" {
+            None
+        } else {
+            Some(v.parse::<f32>().unwrap())
+        }
+    };
+    TxOptions {
+        clip_db: opt_none(f[0]),
+        spread: f[1] == "1",
+        data_gain_db: f[2].parse().unwrap(),
+        hdr_clip_db: None,
+        td_clip: opt_none(f[3]).map(|h| phy::TdClip {
+            headroom_db: h,
+            overshoot: Box::leak(
+                f[4].split('/')
+                    .map(|k| k.parse().unwrap())
+                    .collect::<Vec<f32>>()
+                    .into_boxed_slice(),
+            ),
+        }),
+        ..TxOptions::for_burst(lv.constellation, lv.pilots)
+    }
+}
+
+/// Data2G's whole-burst clipper against the link's: per OFDM level,
+/// channel and config, the PEP-referenced SNR of 10% codeword loss,
+/// bracketed on a 1 dB grid from the level's threshold and interpolated.
+/// `ION_TD` holds `;`-separated configs, each `link` (the link's options)
+/// or `clip:spread:gain:headroom:k1/k2/..` (`clip`, `headroom`: `none`).
+#[test]
+#[ignore]
+fn td_clip_table() {
+    let bursts: usize = std::env::var("ION_BURSTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let levels: Vec<usize> = std::env::var("ION_LEVELS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| {
+            (0..LADDER.len())
+                .filter(|&l| matches!(LADDER[l].wave, Wave::Ofdm(_)))
+                .collect()
+        });
+    let profiles: Vec<Profile> = match std::env::var("ION_PROFILES").as_deref() {
+        Ok("awgn") => vec![Profile::Awgn],
+        Ok("poor") => vec![Profile::CcirPoor],
+        _ => vec![Profile::Awgn, Profile::CcirPoor],
+    };
+    let configs: Vec<String> = std::env::var("ION_TD")
+        .unwrap_or_else(|_| "link".into())
+        .split(';')
+        .map(str::to_owned)
+        .collect();
+    let mut jobs = Vec::new();
+    for &l in &levels {
+        for (pi, &p) in profiles.iter().enumerate() {
+            for cfg in &configs {
+                jobs.push((l, pi, p, cfg.clone()));
+            }
+        }
+    }
+    let out = Mutex::new(vec![(Vec::new(), None::<f32>); jobs.len()]);
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..threads() {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((l, _, prof, cfg)) = jobs.get(i) else {
+                        break;
+                    };
+                    let (l, prof) = (*l, *prof);
+                    let lv = LADDER[l];
+                    let Wave::Ofdm(g) = lv.wave else { break };
+                    let set = Setup {
+                        num: audio::numerology(g),
+                        pilots: lv.pilots,
+                        clip: None,
+                        pep: true,
+                        spread: false,
+                        gain: 0.0,
+                        hdr_clip: None,
+                        low_papr: false,
+                        ladder_papr: false,
+                    };
+                    let opt = td_opt(cfg, l);
+                    let at = |snr: i32| {
+                        cer_with(
+                            &set,
+                            &opt,
+                            lv.constellation,
+                            lv.rate,
+                            prof,
+                            snr as f32,
+                            bursts,
+                            7000 + (snr + 100) as u64,
+                        )
+                    };
+                    // From the mean-power threshold plus ~4 dB of PAPR, walk
+                    // to the first 1 dB step that crosses 10%.
+                    let off = if prof == Profile::Awgn { -2.5 } else { 2.5 };
+                    let mut snr = (ion::level::THRESHOLDS_DB[l] + off + 4.0).round() as i32;
+                    let mut pts = vec![(snr, at(snr))];
+                    let up = pts[0].1 > 0.10;
+                    for _ in 0..12 {
+                        snr += if up { 1 } else { -1 };
+                        let c = at(snr);
+                        pts.push((snr, c));
+                        if (c > 0.10) != up {
+                            break;
+                        }
+                    }
+                    pts.sort_by_key(|p| p.0);
+                    let mut t = None;
+                    for w in pts.windows(2) {
+                        let (a, b) = (w[0], w[1]);
+                        if a.1 > 0.10 && b.1 <= 0.10 {
+                            let la = a.1.max(1e-3).ln();
+                            let lb = b.1.max(1e-3).ln();
+                            t = Some(a.0 as f32 + (la - 0.1f32.ln()) / (la - lb));
+                        }
+                    }
+                    out.lock().unwrap()[i] = (pts, t);
+                }
+            });
+        }
+    });
+    let out = out.into_inner().unwrap();
+    println!("{bursts} bursts per point; SNR against peak power (PEP − 3 dB)\n");
+    println!("| Level | Channel | Config | loss at each SNR | 10% loss at (dB) |");
+    println!("|---|---|---|---|---:|");
+    for ((l, _, p, cfg), (pts, t)) in jobs.iter().zip(&out) {
+        let lv = LADDER[*l];
+        let row: Vec<String> = pts.iter().map(|(s, c)| format!("{s:+}:{c:.2}")).collect();
+        println!(
+            "| {l} {:?} {} | {} | {cfg} | {} | {} |",
+            lv.constellation,
+            rate_name(lv.rate),
+            if *p == Profile::Awgn { "AWGN" } else { "CCIR poor" },
+            row.join(" "),
+            t.map_or("—".into(), |v| format!("{v:+.2}"))
         );
     }
 }
@@ -1611,4 +1781,101 @@ fn occupied_bandwidth_table() {
             hz(hi26) - hz(lo26)
         );
     }
+}
+
+/// Static side of [`td_clip_table`]: per level and `ION_TD` config, the
+/// mean power under the peak (dB against a tone at `TX_LEVEL`) and the
+/// signal-to-distortion ratio against the same burst sent unclipped
+/// (least-squares gain, the preamble included).
+#[test]
+#[ignore]
+fn td_clip_papr() {
+    let configs: Vec<String> = std::env::var("ION_TD")
+        .unwrap_or_else(|_| "link".into())
+        .split(';')
+        .map(str::to_owned)
+        .collect();
+    let levels: Vec<usize> = std::env::var("ION_LEVELS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| {
+            (0..LADDER.len())
+                .filter(|&l| matches!(LADDER[l].wave, Wave::Ofdm(_)))
+                .collect()
+        });
+    println!("| Level | Config | Mean vs peak (dB) | SDR (dB) |");
+    println!("|---|---|---:|---:|");
+    for &l in &levels {
+        let lv = LADDER[l];
+        let Wave::Ofdm(g) = lv.wave else { continue };
+        let num = audio::numerology(g);
+        let bits: Vec<u8> = payload(phy::capacity_bits_with(num, lv.pilots, lv.constellation, 40) / 8, 9)
+            .iter()
+            .flat_map(|b| (0..8).map(move |i| (b >> i) & 1))
+            .collect();
+        let send = |opt: &TxOptions| phy::modulate_full(num, lv.constellation, 0, 0, &bits, num.center_hz(), opt);
+        for cfg in &configs {
+            let opt = td_opt(cfg, l);
+            let a = send(&TxOptions {
+                clip_db: None,
+                td_clip: None,
+                ..opt
+            });
+            let b = send(&opt);
+            if let Ok(dir) = std::env::var("ION_DUMP") {
+                let bytes: Vec<u8> = b.iter().flat_map(|x| x.to_le_bytes()).collect();
+                std::fs::write(format!("{dir}/{l}_{}.f32", cfg.replace(['/', ':'], "_")), bytes).unwrap();
+            }
+            let mean = b.iter().map(|x| x * x).sum::<f32>() / b.len() as f32;
+            let pk = ion_dsp::TX_LEVEL * ion_dsp::TX_LEVEL / 2.0;
+            let ab = a.iter().zip(&b).map(|(x, y)| x * y).sum::<f32>();
+            let aa = a.iter().map(|x| x * x).sum::<f32>();
+            let k = ab / aa;
+            let e = a.iter().zip(&b).map(|(x, y)| (y - k * x).powi(2)).sum::<f32>();
+            println!(
+                "| {l} {:?} {} | {cfg} | {:+.2} | {:.1} |",
+                lv.constellation,
+                rate_name(lv.rate),
+                10.0 * (mean / pk).log10(),
+                10.0 * (k * k * aa / e).log10()
+            );
+        }
+    }
+}
+
+/// The whole-burst clipper raises mean power under the same peak, and its
+/// bursts still decode clean.
+#[test]
+fn td_clip_raises_mean_power_and_decodes() {
+    let l = 10;
+    let set = Setup {
+        num: audio::numerology(Guard::Normal),
+        pilots: LADDER[l].pilots,
+        clip: None,
+        pep: true,
+        spread: false,
+        gain: 0.0,
+        hdr_clip: None,
+        low_papr: false,
+        ladder_papr: false,
+    };
+    let mean = |opt: &TxOptions| {
+        let a = phy::modulate_full(
+            set.num,
+            LADDER[l].constellation,
+            0,
+            0,
+            &[1; 4000],
+            set.num.center_hz(),
+            opt,
+        );
+        a.iter().map(|x| x * x).sum::<f32>() / a.len() as f32
+    };
+    let td = td_opt("none:1:0:-2:1/2/3", l);
+    assert!(mean(&td) > 1.2 * mean(&audio::tx_options(l)));
+    let lv = LADDER[l];
+    assert_eq!(
+        cer_with(&set, &td, lv.constellation, lv.rate, Profile::Awgn, 15.0, 2, 1),
+        0.0
+    );
 }

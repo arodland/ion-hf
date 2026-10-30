@@ -29,6 +29,18 @@ pub struct TxOptions {
     /// Clip level of the header symbols, when not `clip_db` (only with
     /// `clip_db` set).
     pub hdr_clip_db: Option<f32>,
+    /// Whole-burst clip-and-filter after upconversion (Data2G's
+    /// `tx_condition`), on top of or instead of `clip_db`.
+    pub td_clip: Option<TdClip>,
+}
+
+/// Data2G's clipper: clip the 48 kHz envelope at `headroom_db` over the
+/// burst's RMS envelope, the scale raised to `overshoot[i]` on pass `i`
+/// (one pass per factor), then low-pass with the front-end filter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TdClip {
+    pub headroom_db: f32,
+    pub overshoot: &'static [f32],
 }
 
 /// Clip level of [`TxOptions::default`] (and so [`modulate`]), dB over the
@@ -52,6 +64,7 @@ impl Default for TxOptions {
             spread: false,
             data_gain_db: 0.0,
             hdr_clip_db: None,
+            td_clip: None,
         }
     }
 }
@@ -67,6 +80,7 @@ impl TxOptions {
             spread: false,
             data_gain_db: 0.0,
             hdr_clip_db: None,
+            td_clip: None,
         }
     }
 }
@@ -87,6 +101,7 @@ impl TxOptions {
             spread: true,
             data_gain_db: low_papr_gain_db(c),
             hdr_clip_db: Some(LOW_PAPR_HDR_CLIP_DB),
+            td_clip: None,
         }
     }
 }
@@ -189,7 +204,7 @@ pub fn modulate_with(c: Constellation, user: u16, bits: &[u8], center_hz: f32, o
     check_center(num, center_hz);
     let nsym = data_symbols_with(num, opt.pilots, c, bits.len()).max(1);
     let bb = baseband(&NORMAL, c, user, 0, bits, nsym, opt);
-    upconvert(num, &bb, center_hz)
+    upconvert(num, &bb, center_hz, opt.td_clip)
 }
 
 /// Builds one burst of any numerology.
@@ -218,7 +233,7 @@ pub fn modulate_full(
     );
     let nsym = data_symbols_with(num, opt.pilots, c, bits.len());
     let bb = baseband(num.layout(), c, user, extra, bits, nsym, opt);
-    upconvert(num, &bb, center_hz)
+    upconvert(num, &bb, center_hz, opt.td_clip)
 }
 
 /// e^{-j2πm/n}, m = 0..n.
@@ -580,13 +595,12 @@ fn baseband(
 
 /// Interpolates 8 kHz complex baseband to 48 kHz, shifts it to
 /// `center_hz` and takes the real part, peak-normalised to `TX_LEVEL`.
-fn upconvert(num: Numerology, bb: &[Complex], center_hz: f32) -> Vec<f32> {
+fn upconvert(num: Numerology, bb: &[Complex], center_hz: f32, td: Option<TdClip>) -> Vec<f32> {
     let taps = front_end_taps_for(num);
     let flen = taps.len();
     let len = bb.len() * DEC + flen - 1;
-    let mut out = vec![0f32; len];
-    let w = core::f64::consts::TAU * center_hz as f64 / AUDIO_RATE as f64;
-    for (t, o) in out.iter_mut().enumerate() {
+    let mut z = vec![Complex::ZERO; len];
+    for (t, o) in z.iter_mut().enumerate() {
         let m_hi = (t / DEC).min(bb.len() - 1);
         let m_lo = if t >= flen - 1 {
             (t - (flen - 1)).div_ceil(DEC)
@@ -597,6 +611,14 @@ fn upconvert(num: Numerology, bb: &[Complex], center_hz: f32) -> Vec<f32> {
         for (m, &v) in bb.iter().enumerate().take(m_hi + 1).skip(m_lo) {
             acc += v.scale(taps[t - m * DEC]);
         }
+        *o = acc;
+    }
+    if let Some(td) = td {
+        td_clip(&mut z, &taps, td);
+    }
+    let w = core::f64::consts::TAU * center_hz as f64 / AUDIO_RATE as f64;
+    let mut out = vec![0f32; len];
+    for (t, (o, acc)) in out.iter_mut().zip(&z).enumerate() {
         let (s, co) = ((w * t as f64) % core::f64::consts::TAU).sin_cos();
         *o = acc.re * co as f32 - acc.im * s as f32;
     }
@@ -606,6 +628,37 @@ fn upconvert(num: Numerology, bb: &[Complex], center_hz: f32) -> Vec<f32> {
         *o *= k;
     }
     out
+}
+
+/// [`TdClip`] on 48 kHz complex baseband `z` (its envelope is the
+/// passband's analytic envelope; the low-pass is the passband's band-pass).
+/// The interpolation taps have DC gain `DEC`, so they are normalised here.
+fn td_clip(z: &mut [Complex], taps: &[f32], td: TdClip) {
+    let power = z.iter().map(|v| v.norm_sqr()).sum::<f32>() / z.len() as f32;
+    let thresh = power.sqrt() * 10f32.powf(td.headroom_db / 20.0);
+    let g = 1.0 / taps.iter().sum::<f32>();
+    let h = taps.len() / 2;
+    let mut tmp = vec![Complex::ZERO; z.len()];
+    for &k in td.overshoot {
+        for v in z.iter_mut() {
+            let m = v.norm();
+            if m > thresh {
+                *v = v.scale((thresh / m).powf(k));
+            }
+        }
+        // ponytail: direct-form convolution, ~0.1 s per burst; FFT it if
+        // this ever leaves the experiment.
+        for (t, o) in tmp.iter_mut().enumerate() {
+            let lo = t.saturating_sub(h);
+            let hi = (t + h).min(z.len() - 1);
+            let mut acc = Complex::ZERO;
+            for (i, v) in z[lo..=hi].iter().enumerate() {
+                acc += v.scale(taps[lo + i + h - t]);
+            }
+            *o = acc.scale(g);
+        }
+        z.copy_from_slice(&tmp);
+    }
 }
 
 /// Data cell values `modulate` sends for `bits`, in cell order (debug
